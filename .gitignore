@@ -1,0 +1,30 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Minecraft
+run/
+
+# Graphify
+graphify-out/
+.graphify_*
+
+# Reports (generated HTML)
+report/*.html
+
+# JARs (generated outputs)
+*.jar
+!YJHack.jar

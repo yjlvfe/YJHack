@@ -1,0 +1,119 @@
+plugins {
+    id 'fabric-loom' version "${loom_version}"
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    maven { url = 'https://maven.fabricmc.net/' }
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+// ============================================================
+// Use Eclipse-compiled classes (bin/main/) for modules without
+// source (aimassist, tracker, modgui). autoleft, autoright, and
+// ninjabridge are compiled from source.
+// ============================================================
+def BIN_CLASSES = file('bin/main')
+
+// Extract Good mod classes before remap
+tasks.register('extractGoodModClasses') {
+    outputs.dir(layout.buildDirectory.dir('classes/goodmod'))
+    doLast {
+        def outDir = layout.buildDirectory.dir('classes/goodmod').get().asFile
+        delete outDir
+        if (BIN_CLASSES.exists()) {
+            copy {
+                from BIN_CLASSES
+                include 'com/masteryj/aimassist/**'
+                include 'com/masteryj/modgui/**'
+                include 'com/masteryj/tracker/**'
+                include 'assets/**'
+                into outDir
+            }
+        } else {
+            // Fallback: try the JAR
+            def jarPath = '/home/masteryj/Desktop/Mod Maker/Fabric/Good mod/HelpNoob-Core.jar'
+            if (file(jarPath).exists()) {
+                copy {
+                    from zipTree(jarPath)
+                    include 'com/masteryj/aimassist/**'
+                    include 'com/masteryj/modgui/**'
+                    include 'com/masteryj/tracker/**'
+                    include 'assets/**'
+                    into outDir
+                }
+            } else {
+                throw new GradleException(
+                    "Missing Good mod classes! Either compile with Eclipse first (bin/main/) " +
+                    "or place HelpNoob-Core.jar at: $jarPath"
+                )
+            }
+        }
+    }
+}
+
+// Merge Good mod classes (already intermediary) into JAR after remap
+tasks.register('mergeGoodModClasses') {
+    dependsOn remapJar, extractGoodModClasses
+    doLast {
+        def jarFile = remapJar.archiveFile.get().asFile
+        def goodModDir = layout.buildDirectory.dir('classes/goodmod').get().asFile
+        def tempDir = layout.buildDirectory.dir('tmp/jar-merge').get().asFile
+        delete tempDir; tempDir.mkdirs()
+
+        copy { from zipTree(jarFile); into tempDir }
+        copy {
+            from goodModDir
+            include 'com/masteryj/aimassist/**'
+            include 'com/masteryj/modgui/**'
+            include 'com/masteryj/tracker/**'
+            include 'assets/**'
+            into tempDir
+            duplicatesStrategy = DuplicatesStrategy.INCLUDE
+        }
+        ant.jar(destfile: jarFile, basedir: tempDir, duplicate: 'fail')
+        delete tempDir
+    }
+}
+
+remapJar.finalizedBy mergeGoodModClasses
+remapJar.dependsOn extractGoodModClasses
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'loader_version', project.loader_version
+    filesMatching('fabric.mod.json') {
+        expand version: project.version, loader_version: project.loader_version
+    }
+}
+
+jar { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
+
+task copyJar(type: Copy) {
+    dependsOn mergeGoodModClasses
+    from remapJar.archiveFile
+    into file('/home/masteryj/Desktop/Mod Maker/YJHack-1.21.5')
+    rename { 'YJHack-1.21.5.jar' }
+}
+
+build.finalizedBy copyJar
+clean.doLast { delete file('/home/masteryj/Desktop/Mod Maker/YJHack-1.21.5/YJHack-1.21.5.jar') }
