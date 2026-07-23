@@ -84,11 +84,8 @@ public final class RightClickPolicy {
         }
 
         Identifier id = Registries.ITEM.getId(stack.getItem());
-        if (id != null) {
-            String path = id.getPath();
-            if (SINGLE_PRESS_IDS.contains(path) || path.equals("bucket") || path.endsWith("_bucket")) {
-                return true;
-            }
+        if (id != null && isSinglePressPath(id.getPath())) {
+            return true;
         }
 
         // Charge / draw / release items (bow, crossbow, trident, spear, horn, …):
@@ -100,6 +97,18 @@ public final class RightClickPolicy {
         }
 
         return false;
+    }
+
+    /**
+     * Pure registry-path rule for discrete-use items (the explicit id set plus any
+     * bucket). Split out so the classification contract can be unit-tested without a
+     * Minecraft runtime. {@code path} is a {@code minecraft:} namespace path.
+     */
+    public static boolean isSinglePressPath(String path) {
+        if (path == null) {
+            return false;
+        }
+        return SINGLE_PRESS_IDS.contains(path) || path.equals("bucket") || path.endsWith("_bucket");
     }
 
     /**

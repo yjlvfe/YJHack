@@ -18,6 +18,9 @@ Thumbs.db
 
 # Minecraft
 run/
+# Log dir created by fabric-loader-junit / Minecraft bootstrap during tests
+Dev/logs/
+logs/
 
 # Graphify
 graphify-out/
