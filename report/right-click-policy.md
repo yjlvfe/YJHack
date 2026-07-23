@@ -70,7 +70,7 @@ replays a click on return.
 ## Acceptance tests
 
 **Automated (run here):** headless rising-edge model
-(`scratchpad/SinglePressModelTest.java`) — models the exact contract handleSinglePress implements:
+(`report/SinglePressModelTest.java`) — models the exact contract handleSinglePress implements:
 
 ```
 [PASS] 20 separate presses = 20 uses      expected=20 actual=20
