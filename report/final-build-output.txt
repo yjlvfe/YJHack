@@ -17,3 +17,6 @@ Installed into Lunar mods dir:
 
 Headless logic test (rising-edge single-press model): ALL PASS
   20 separate presses = 20 uses; hold 200 ticks = 1 use; press/release/press = 2 uses.
+
+Commit (repair v2 code): dfd7b89c83b140dffc739ca74d7c85f22b042c46
+Branch                 : repair/full-source-recovery-1.21.5
