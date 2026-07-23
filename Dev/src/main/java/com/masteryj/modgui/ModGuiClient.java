@@ -2,25 +2,16 @@ package com.masteryj.modgui;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
-import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
-import java.util.function.IntConsumer;
-import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.narration.NarrationMessageBuilder;
-import net.minecraft.client.gui.screen.narration.NarrationPart;
 import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.client.gui.widget.ClickableWidget;
-import net.minecraft.client.gui.widget.SliderWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -36,6 +27,10 @@ import com.masteryj.autoleft.AutoLeftClient;
 import com.masteryj.autoright.AutoRightClient;
 import com.masteryj.ninjabridge.NinjaBridgeClient;
 import com.masteryj.tracker.TrackerClient;
+import com.masteryj.modgui.theme.YjTheme;
+import com.masteryj.modgui.component.KeybindButton;
+import com.masteryj.modgui.component.ThemeSlider;
+import com.masteryj.modgui.component.ToggleSwitch;
 
 /**
  * YJHack in-game control panel.
@@ -61,7 +56,6 @@ import com.masteryj.tracker.TrackerClient;
  */
 public final class ModGuiClient implements ClientModInitializer {
    private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-ModGui");
-   private static final int MOUSE_KEY_OFFSET = 1000;
 
    private KeyBinding openGuiKey;
 
@@ -76,272 +70,6 @@ public final class ModGuiClient implements ClientModInitializer {
             }
          }
       });
-   }
-
-   // =====================================================================
-   //  THEME
-   // =====================================================================
-   /** Single source of truth for colours and metrics. All colours are ARGB. */
-   static final class Theme {
-      // Full-screen tint — the ONLY layer over the whole world. Very light.
-      static final int SCREEN_TINT   = 0x22060A0F;   // alpha 0x22 (~13%)
-
-      // Glass panels (translucent so the world shows through).
-      static final int PANEL         = 0xB00E1620;   // ~69% main panel
-      static final int SIDEBAR       = 0xC00B121B;   // slightly darker, still translucent
-      static final int HEADER        = 0xCC0C141E;
-      static final int CARD          = 0x9C121C28;
-      static final int CARD_HOVER    = 0xBE1A2836;
-      static final int CTRL          = 0x8C13202E;
-      static final int CTRL_HOVER    = 0xB01D2E40;
-
-      static final int BORDER        = 0x30FFFFFF;   // hairline light border
-      static final int BORDER_SOFT   = 0x18FFFFFF;
-      static final int DIVIDER       = 0x22FFFFFF;
-
-      static final int ACCENT        = 0xFF35E0C8;   // teal
-
-      static final int TEXT          = 0xFFF3F6FA;
-      static final int TEXT_DIM      = 0xFFA6B6C8;
-      static final int TEXT_MUTED    = 0xFF6E7F93;
-
-      static final int SUCCESS       = 0xFF4BD16A;
-      static final int WARNING       = 0xFFF5C147;
-
-      static final int TRACK_OFF     = 0xFF33404E;
-      static final int KNOB          = 0xFFF3F6FA;
-
-      static final int PAD    = 10;
-      static final int ROW    = 24;
-      static final int CTRL_H = 20;
-
-      private Theme() {
-      }
-
-      /** Flat panel with a hairline border. */
-      static void panel(DrawContext c, int x, int y, int w, int h, int fill, int border) {
-         c.fill(x, y, x + w, y + h, fill);
-         c.fill(x, y, x + w, y + 1, border);
-         c.fill(x, y + h - 1, x + w, y + h, border);
-         c.fill(x, y, x + 1, y + h, border);
-         c.fill(x + w - 1, y, x + w, y + h, border);
-      }
-
-      /** Pill / rounded bar (corner pixels trimmed). */
-      static void pill(DrawContext c, int x, int y, int w, int h, int color) {
-         if (w <= 0 || h <= 0) return;
-         c.fill(x + 1, y, x + w - 1, y + h, color);
-         c.fill(x, y + 1, x + w, y + h - 1, color);
-      }
-   }
-
-   // =====================================================================
-   //  SHARED HELPERS
-   // =====================================================================
-   private static int encodeMouse(int button) {
-      return MOUSE_KEY_OFFSET + Math.max(0, button);
-   }
-
-   static Text keyName(int keyCode) {
-      if (keyCode >= MOUSE_KEY_OFFSET) {
-         return InputUtil.Type.MOUSE.createFromCode(keyCode - MOUSE_KEY_OFFSET).getLocalizedText();
-      }
-      if (keyCode > 0) {
-         return InputUtil.Type.KEYSYM.createFromCode(keyCode).getLocalizedText();
-      }
-      return Text.literal("None");
-   }
-
-   static String fmt(double v) {
-      return Math.abs(v - Math.rint(v)) < 1.0E-4
-         ? String.valueOf((int) Math.rint(v))
-         : String.format(Locale.ROOT, "%.2f", v);
-   }
-
-   // =====================================================================
-   //  WIDGETS
-   // =====================================================================
-   /** A real sliding on/off switch with an inline label. */
-   static final class ToggleSwitch extends ClickableWidget {
-      private boolean value;
-      private final Consumer<Boolean> onChange;
-      private final String label;
-
-      ToggleSwitch(int x, int y, int w, int h, String label, boolean value, Consumer<Boolean> onChange) {
-         super(x, y, w, h, Text.literal(label));
-         this.label = label;
-         this.value = value;
-         this.onChange = onChange;
-      }
-
-      @Override
-      protected void renderWidget(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         boolean hovered = this.isMouseOver(mouseX, mouseY);
-         Theme.panel(ctx, getX(), getY(), getWidth(), getHeight(), hovered ? Theme.CTRL_HOVER : Theme.CTRL, Theme.BORDER_SOFT);
-         TextRenderer tr = MinecraftClient.getInstance().textRenderer;
-         ctx.drawText(tr, this.label, getX() + 8, getY() + (getHeight() - 8) / 2, Theme.TEXT, false);
-
-         int trackW = 26;
-         int trackH = 12;
-         int tx = getX() + getWidth() - trackW - 8;
-         int ty = getY() + (getHeight() - trackH) / 2;
-         Theme.pill(ctx, tx, ty, trackW, trackH, this.value ? Theme.ACCENT : Theme.TRACK_OFF);
-         int knobX = this.value ? tx + trackW - 11 : tx + 1;
-         Theme.pill(ctx, knobX, ty + 1, 10, trackH - 2, Theme.KNOB);
-      }
-
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (this.active && this.visible && button == 0 && this.isMouseOver(mouseX, mouseY)) {
-            this.value = !this.value;
-            this.onChange.accept(this.value);
-            return true;
-         }
-         return false;
-      }
-
-      @Override
-      protected void appendClickableNarrations(NarrationMessageBuilder builder) {
-         builder.put(NarrationPart.TITLE, Text.literal(this.label + ": " + (this.value ? "on" : "off")));
-      }
-   }
-
-   /**
-    * Custom-drawn slider built on the vanilla {@link SliderWidget} (which handles
-    * the drag maths and keyboard) but rendered in the YJHack theme. Reports the
-    * value in its real domain, optionally rounded to an integer.
-    */
-   static final class ThemeSlider extends SliderWidget {
-      private final double min;
-      private final double max;
-      private final boolean asInt;
-      private final String label;
-      private final DoubleConsumer onValue;
-      private boolean syncing;
-
-      ThemeSlider(int x, int y, int w, int h, String label, double min, double max, double value, boolean asInt, DoubleConsumer onValue) {
-         super(x, y, w, h, Text.empty(), clamp01((value - min) / (max - min)));
-         this.min = min;
-         this.max = max;
-         this.asInt = asInt;
-         this.label = label;
-         this.onValue = onValue;
-         this.updateMessage();
-      }
-
-      private static double clamp01(double v) {
-         return MathHelper.clamp(v, 0.0, 1.0);
-      }
-
-      double domainValue() {
-         double v = this.min + this.value * (this.max - this.min);
-         return this.asInt ? Math.round(v) : v;
-      }
-
-      /** Set from the paired text field without firing applyValue. */
-      void setDomainQuiet(double v) {
-         this.syncing = true;
-         this.value = clamp01((v - this.min) / (this.max - this.min));
-         this.updateMessage();
-         this.syncing = false;
-      }
-
-      @Override
-      protected void updateMessage() {
-         this.setMessage(Text.literal(this.label + ": " + fmt(domainValue())));
-      }
-
-      @Override
-      protected void applyValue() {
-         if (!this.syncing) {
-            this.onValue.accept(domainValue());
-         }
-      }
-
-      @Override
-      public void renderWidget(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         boolean hovered = this.isMouseOver(mouseX, mouseY);
-         Theme.panel(ctx, getX(), getY(), getWidth(), getHeight(), hovered ? Theme.CTRL_HOVER : Theme.CTRL, Theme.BORDER_SOFT);
-         int trackY = getY() + getHeight() - 5;
-         int trackX0 = getX() + 6;
-         int trackX1 = getX() + getWidth() - 6;
-         ctx.fill(trackX0, trackY, trackX1, trackY + 2, Theme.TRACK_OFF);
-         int fillX = trackX0 + (int) ((trackX1 - trackX0) * this.value);
-         ctx.fill(trackX0, trackY, fillX, trackY + 2, Theme.ACCENT);
-         int knobX = MathHelper.clamp(fillX, trackX0, trackX1 - 3);
-         ctx.fill(knobX - 2, trackY - 3, knobX + 3, trackY + 4, Theme.KNOB);
-         TextRenderer tr = MinecraftClient.getInstance().textRenderer;
-         ctx.drawText(tr, this.label, getX() + 6, getY() + 4, Theme.TEXT_DIM, false);
-         String val = fmt(domainValue());
-         ctx.drawText(tr, val, getX() + getWidth() - 6 - tr.getWidth(val), getY() + 4, Theme.TEXT, false);
-      }
-   }
-
-   /** Click, then press any key or mouse button to bind; Backspace/Delete clears. */
-   static final class KeybindButton extends ClickableWidget {
-      private final IntSupplier getter;
-      private final IntConsumer setter;
-      private boolean listening;
-
-      KeybindButton(int x, int y, int w, int h, IntSupplier getter, IntConsumer setter) {
-         super(x, y, w, h, Text.literal("Keybind"));
-         this.getter = getter;
-         this.setter = setter;
-      }
-
-      boolean isListening() {
-         return this.listening;
-      }
-
-      @Override
-      protected void renderWidget(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         boolean hovered = this.isMouseOver(mouseX, mouseY);
-         Theme.panel(ctx, getX(), getY(), getWidth(), getHeight(), hovered ? Theme.CTRL_HOVER : Theme.CTRL, Theme.BORDER_SOFT);
-         TextRenderer tr = MinecraftClient.getInstance().textRenderer;
-         ctx.drawText(tr, "Toggle Key", getX() + 8, getY() + (getHeight() - 8) / 2, Theme.TEXT, false);
-         Text right = this.listening
-            ? Text.literal("Press a key…").formatted(Formatting.YELLOW)
-            : keyName(this.getter.getAsInt());
-         int rw = tr.getWidth(right);
-         ctx.drawText(tr, right, getX() + getWidth() - 8 - rw, getY() + (getHeight() - 8) / 2, this.listening ? Theme.WARNING : Theme.ACCENT, false);
-      }
-
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (this.active && this.visible && button == 0 && this.isMouseOver(mouseX, mouseY)) {
-            this.listening = true;
-            return true;
-         }
-         return false;
-      }
-
-      /** Called by the screen while listening; returns true if it consumed the input. */
-      boolean captureMouse(int button) {
-         if (!this.listening) return false;
-         this.setter.accept(encodeMouse(button));
-         this.listening = false;
-         return true;
-      }
-
-      boolean captureKey(int keyCode) {
-         if (!this.listening) return false;
-         if (keyCode == 256) {                       // Escape cancels
-            this.listening = false;
-            return true;
-         }
-         if (keyCode == 259 || keyCode == 261) {     // Backspace / Delete clears
-            this.setter.accept(-1);
-         } else {
-            this.setter.accept(keyCode);
-         }
-         this.listening = false;
-         return true;
-      }
-
-      @Override
-      protected void appendClickableNarrations(NarrationMessageBuilder builder) {
-         builder.put(NarrationPart.TITLE, Text.literal("Toggle key: ").append(keyName(this.getter.getAsInt())));
-      }
    }
 
    // =====================================================================
@@ -435,7 +163,7 @@ public final class ModGuiClient implements ClientModInitializer {
       }
 
       protected int contentX() {
-         return winX() + sidebarW() + Theme.PAD;
+         return winX() + sidebarW() + YjTheme.PAD;
       }
 
       protected int contentTop() {
@@ -443,7 +171,7 @@ public final class ModGuiClient implements ClientModInitializer {
       }
 
       protected int contentRight() {
-         return winX() + winW() - Theme.PAD;
+         return winX() + winW() - YjTheme.PAD;
       }
 
       protected int contentW() {
@@ -498,7 +226,7 @@ public final class ModGuiClient implements ClientModInitializer {
       @Override
       public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
          this.pendingTooltip = null;
-         ctx.fill(0, 0, this.width, this.height, Theme.SCREEN_TINT);   // light tint only
+         ctx.fill(0, 0, this.width, this.height, YjTheme.SCREEN_TINT);   // light tint only
          this.renderChrome(ctx, mouseX, mouseY);
          this.renderContent(ctx, mouseX, mouseY, delta);
          super.render(ctx, mouseX, mouseY, delta);                    // widgets on top
@@ -515,24 +243,24 @@ public final class ModGuiClient implements ClientModInitializer {
          int y = winY();
          int w = winW();
          int h = winH();
-         Theme.panel(ctx, x, y, w, h, Theme.PANEL, Theme.BORDER);
+         YjTheme.panel(ctx, x, y, w, h, YjTheme.PANEL, YjTheme.BORDER);
 
          // Header
-         ctx.fill(x + 1, y + 1, x + w - 1, y + headerH(), Theme.HEADER);
-         ctx.fill(x + 1, y + headerH() - 1, x + w - 1, y + headerH(), Theme.ACCENT);
+         ctx.fill(x + 1, y + 1, x + w - 1, y + headerH(), YjTheme.HEADER);
+         ctx.fill(x + 1, y + headerH() - 1, x + w - 1, y + headerH(), YjTheme.ACCENT);
          TextRenderer tr = this.textRenderer;
-         ctx.drawText(tr, Text.literal("YJHack").formatted(Formatting.BOLD), x + 12, y + 7, Theme.TEXT, false);
-         ctx.drawText(tr, "Client", x + 12 + tr.getWidth("YJHack") + 5, y + 8, Theme.ACCENT, false);
+         ctx.drawText(tr, Text.literal("YJHack").formatted(Formatting.BOLD), x + 12, y + 7, YjTheme.TEXT, false);
+         ctx.drawText(tr, "Client", x + 12 + tr.getWidth("YJHack") + 5, y + 8, YjTheme.ACCENT, false);
          String status = headerStatus();
          if (status != null) {
-            ctx.drawText(tr, status, x + w - 12 - tr.getWidth(status), y + 8, Theme.TEXT_DIM, false);
+            ctx.drawText(tr, status, x + w - 12 - tr.getWidth(status), y + 8, YjTheme.TEXT_DIM, false);
          }
 
          // Sidebar
          int sbTop = y + headerH();
          int sbBottom = y + h;
-         ctx.fill(x + 1, sbTop, x + sidebarW(), sbBottom - 1, Theme.SIDEBAR);
-         ctx.fill(x + sidebarW(), sbTop, x + sidebarW() + 1, sbBottom - 1, Theme.BORDER_SOFT);
+         ctx.fill(x + 1, sbTop, x + sidebarW(), sbBottom - 1, YjTheme.SIDEBAR);
+         ctx.fill(x + sidebarW(), sbTop, x + sidebarW() + 1, sbBottom - 1, YjTheme.BORDER_SOFT);
          renderNav(ctx, mouseX, mouseY);
       }
 
@@ -550,11 +278,11 @@ public final class ModGuiClient implements ClientModInitializer {
             boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + 22;
             if (active) {
                ctx.fill(x, y, x + w, y + 22, 0x3335E0C8);
-               ctx.fill(x, y, x + 2, y + 22, Theme.ACCENT);
+               ctx.fill(x, y, x + 2, y + 22, YjTheme.ACCENT);
             } else if (hovered) {
-               ctx.fill(x, y, x + w, y + 22, Theme.CTRL_HOVER);
+               ctx.fill(x, y, x + w, y + 22, YjTheme.CTRL_HOVER);
             }
-            ctx.drawText(tr, item.label(), x + 8, y + 7, active ? Theme.TEXT : Theme.TEXT_DIM, false);
+            ctx.drawText(tr, item.label(), x + 8, y + 7, active ? YjTheme.TEXT : YjTheme.TEXT_DIM, false);
             y += 24;
          }
       }
@@ -614,28 +342,28 @@ public final class ModGuiClient implements ClientModInitializer {
             int tw = tr.getWidth(this.toastMessage) + 20;
             int tx = winX() + winW() - tw - 12;
             int ty = footerY() - 24;
-            Theme.panel(ctx, tx, ty, tw, 18, 0xE01B2A22, Theme.SUCCESS);
-            ctx.fill(tx, ty, tx + 2, ty + 18, Theme.SUCCESS);
-            ctx.drawText(tr, this.toastMessage, tx + 10, ty + 5, Theme.TEXT, false);
+            YjTheme.panel(ctx, tx, ty, tw, 18, 0xE01B2A22, YjTheme.SUCCESS);
+            ctx.fill(tx, ty, tx + 2, ty + 18, YjTheme.SUCCESS);
+            ctx.drawText(tr, this.toastMessage, tx + 10, ty + 5, YjTheme.TEXT, false);
          }
       }
 
       // ---- shared header/heading helpers ----
       protected void drawHeading(DrawContext ctx, String title, String subtitle) {
          TextRenderer tr = this.textRenderer;
-         ctx.drawText(tr, Text.literal(title).formatted(Formatting.BOLD), contentX(), contentTop(), Theme.TEXT, false);
+         ctx.drawText(tr, Text.literal(title).formatted(Formatting.BOLD), contentX(), contentTop(), YjTheme.TEXT, false);
          if (subtitle != null) {
-            ctx.drawText(tr, subtitle, contentX(), contentTop() + 11, Theme.TEXT_MUTED, false);
+            ctx.drawText(tr, subtitle, contentX(), contentTop() + 11, YjTheme.TEXT_MUTED, false);
          }
-         ctx.fill(contentX(), contentTop() + 22, contentRight(), contentTop() + 23, Theme.DIVIDER);
+         ctx.fill(contentX(), contentTop() + 22, contentRight(), contentTop() + 23, YjTheme.DIVIDER);
       }
 
       protected void addStatusChip(DrawContext ctx, int x, int y, boolean on) {
          String s = on ? "ENABLED" : "DISABLED";
          TextRenderer tr = this.textRenderer;
          int w = tr.getWidth(s) + 10;
-         int col = on ? Theme.SUCCESS : Theme.TEXT_MUTED;
-         Theme.pill(ctx, x, y, w, 11, (col & 0x00FFFFFF) | 0x33000000);
+         int col = on ? YjTheme.SUCCESS : YjTheme.TEXT_MUTED;
+         YjTheme.pill(ctx, x, y, w, 11, (col & 0x00FFFFFF) | 0x33000000);
          ctx.drawText(tr, Text.literal(s).formatted(Formatting.BOLD), x + 5, y + 2, col, false);
       }
 
@@ -649,14 +377,14 @@ public final class ModGuiClient implements ClientModInitializer {
          int fieldW = 46;
          int sliderW = Math.max(60, totalW - fieldW - 6);
          boolean[] guard = {false};
-         TextFieldWidget field = new TextFieldWidget(this.textRenderer, x + sliderW + 6, y, fieldW, Theme.CTRL_H + 2, Text.literal(label));
+         TextFieldWidget field = new TextFieldWidget(this.textRenderer, x + sliderW + 6, y, fieldW, YjTheme.CTRL_H + 2, Text.literal(label));
          field.setMaxLength(8);
-         field.setText(asInt ? String.valueOf((int) Math.round(value)) : fmt(value));
-         ThemeSlider slider = new ThemeSlider(x, y, sliderW, Theme.CTRL_H + 2, label, min, max, value, asInt, v -> {
+         field.setText(asInt ? String.valueOf((int) Math.round(value)) : YjTheme.fmt(value));
+         ThemeSlider slider = new ThemeSlider(x, y, sliderW, YjTheme.CTRL_H + 2, label, min, max, value, asInt, v -> {
             setter.accept(v);
             if (!guard[0]) {
                guard[0] = true;
-               field.setText(asInt ? String.valueOf((int) Math.round(v)) : fmt(v));
+               field.setText(asInt ? String.valueOf((int) Math.round(v)) : YjTheme.fmt(v));
                guard[0] = false;
             }
             this.markEdited();
@@ -681,17 +409,17 @@ public final class ModGuiClient implements ClientModInitializer {
 
       /** Save + Reset + Back bar pinned to the panel footer. */
       protected void addActionBar(Runnable onReset) {
-         int y = footerY() + (footerH() - Theme.CTRL_H) / 2;
-         int right = winX() + winW() - Theme.PAD;
+         int y = footerY() + (footerH() - YjTheme.CTRL_H) / 2;
+         int right = winX() + winW() - YjTheme.PAD;
          this.addDrawableChild(ButtonWidget.builder(Text.literal("Save"), b -> {
             this.commit();
             this.dirty = false;
             this.showToast("Settings saved");
-         }).dimensions(right - 66, y, 66, Theme.CTRL_H).build());
+         }).dimensions(right - 66, y, 66, YjTheme.CTRL_H).build());
          this.addDrawableChild(ButtonWidget.builder(Text.literal("Reset"), b -> onReset.run())
-            .dimensions(right - 66 - 8 - 56, y, 56, Theme.CTRL_H).build());
+            .dimensions(right - 66 - 8 - 56, y, 56, YjTheme.CTRL_H).build());
          this.addDrawableChild(ButtonWidget.builder(Text.literal("‹ Back"), b -> this.close())
-            .dimensions(contentX(), y, 52, Theme.CTRL_H).build());
+            .dimensions(contentX(), y, 52, YjTheme.CTRL_H).build());
       }
    }
 
@@ -763,12 +491,12 @@ public final class ModGuiClient implements ClientModInitializer {
          i = addCard(i, cols, cardW, cardH, gap, x0, y0, "aimassist", "AimAssist", "Smooth target tracking",
             () -> AimAssistClient.config != null && AimAssistClient.config.enabled,
             () -> AimAssistClient.config != null ? AimAssistClient.config.toggleKeyCode : -1,
-            () -> AimAssistClient.config == null ? "" : "Speed " + fmt(AimAssistClient.config.speed),
-            AimAssistClient.config == null ? "" : "FOV " + fmt(AimAssistClient.config.fov));
+            () -> AimAssistClient.config == null ? "" : "Speed " + YjTheme.fmt(AimAssistClient.config.speed),
+            AimAssistClient.config == null ? "" : "FOV " + YjTheme.fmt(AimAssistClient.config.fov));
          i = addCard(i, cols, cardW, cardH, gap, x0, y0, "tracker", "Tracker", "Hidden-enemy HUD + box",
             () -> TrackerClient.config != null && TrackerClient.config.enabled,
             () -> TrackerClient.config != null ? TrackerClient.config.toggleKeyCode : -1,
-            () -> TrackerClient.config == null ? "" : "Range " + fmt(TrackerClient.config.range),
+            () -> TrackerClient.config == null ? "" : "Range " + YjTheme.fmt(TrackerClient.config.range),
             TrackerClient.config != null && TrackerClient.config.ignoreOwnTeam ? "Ignores own team" : "Tracks all teams");
       }
 
@@ -784,7 +512,7 @@ public final class ModGuiClient implements ClientModInitializer {
          // Hover tooltip carries the detail that used to crowd the card face.
          List<String> tip = new ArrayList<>();
          tip.add(label);
-         tip.add("Toggle key: " + keyName(key.get()).getString());
+         tip.add("Toggle key: " + YjTheme.keyName(key.get()).getString());
          for (String e : extraTip) {
             if (e != null && !e.isEmpty()) tip.add(e);
          }
@@ -800,15 +528,15 @@ public final class ModGuiClient implements ClientModInitializer {
          for (Card card : this.cards) {
             boolean hovered = card.contains(mouseX, mouseY);
             boolean on = Boolean.TRUE.equals(card.enabled().get());
-            Theme.panel(ctx, card.x(), card.y(), card.w(), card.h(), hovered ? Theme.CARD_HOVER : Theme.CARD, Theme.BORDER_SOFT);
-            ctx.fill(card.x(), card.y(), card.x() + 2, card.y() + card.h(), on ? Theme.ACCENT : Theme.TEXT_MUTED);
+            YjTheme.panel(ctx, card.x(), card.y(), card.w(), card.h(), hovered ? YjTheme.CARD_HOVER : YjTheme.CARD, YjTheme.BORDER_SOFT);
+            ctx.fill(card.x(), card.y(), card.x() + 2, card.y() + card.h(), on ? YjTheme.ACCENT : YjTheme.TEXT_MUTED);
             // Three lines only, with more breathing room; details live in the hover tooltip.
-            ctx.drawText(tr, Text.literal(card.label()).formatted(Formatting.BOLD), card.x() + 10, card.y() + 9, Theme.TEXT, false);
+            ctx.drawText(tr, Text.literal(card.label()).formatted(Formatting.BOLD), card.x() + 10, card.y() + 9, YjTheme.TEXT, false);
             int dotX = card.x() + card.w() - 12;
-            ctx.fill(dotX, card.y() + 11, dotX + 5, card.y() + 16, on ? Theme.SUCCESS : Theme.TEXT_MUTED);
-            ctx.drawText(tr, card.desc(), card.x() + 10, card.y() + 24, Theme.TEXT_MUTED, false);
+            ctx.fill(dotX, card.y() + 11, dotX + 5, card.y() + 16, on ? YjTheme.SUCCESS : YjTheme.TEXT_MUTED);
+            ctx.drawText(tr, card.desc(), card.x() + 10, card.y() + 24, YjTheme.TEXT_MUTED, false);
             String sum = card.summary().get();
-            ctx.drawText(tr, sum, card.x() + 10, card.y() + 37, Theme.TEXT_DIM, false);
+            ctx.drawText(tr, sum, card.x() + 10, card.y() + 37, YjTheme.TEXT_DIM, false);
          }
       }
 
@@ -880,31 +608,31 @@ public final class ModGuiClient implements ClientModInitializer {
          int x = contentX();
          int w = contentW();
          int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
             this.cfg.enabled = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Turn Auto Left on or off.");
-         y += Theme.ROW;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Weapon Mode", this.cfg.weaponCheck, v -> {
+         addHelp(x, y, w, YjTheme.CTRL_H, "Turn Auto Left on or off.");
+         y += YjTheme.ROW;
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Weapon Mode", this.cfg.weaponCheck, v -> {
             this.cfg.weaponCheck = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Only click while holding a sword or axe.");
-         y += Theme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, Theme.CTRL_H,
+         addHelp(x, y, w, YjTheme.CTRL_H, "Only click while holding a sword or axe.");
+         y += YjTheme.ROW;
+         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
             () -> this.cfg.toggleKeyCode, code -> {
                this.cfg.toggleKeyCode = code;
                this.markEdited();
                this.commit();
                this.dirty = false;
             }));
-         y += Theme.ROW + 4;
+         y += YjTheme.ROW + 4;
          this.addSlider(x, y, w, "Min CPS", 1, 40, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
-         addHelp(x, y, w, Theme.CTRL_H, "Minimum clicks per second.");
-         y += Theme.ROW + 2;
+         addHelp(x, y, w, YjTheme.CTRL_H, "Minimum clicks per second.");
+         y += YjTheme.ROW + 2;
          this.addSlider(x, y, w, "Max CPS", 1, 40, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
-         addHelp(x, y, w, Theme.CTRL_H, "Maximum clicks per second.");
+         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum clicks per second.");
          addActionBar(this::reset);
       }
 
@@ -988,32 +716,32 @@ public final class ModGuiClient implements ClientModInitializer {
          int x = contentX();
          int w = contentW();
          int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
             this.cfg.enabled = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Turn Auto Right on or off.");
-         y += Theme.ROW;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Block Mode", this.cfg.blockMode, v -> {
+         addHelp(x, y, w, YjTheme.CTRL_H, "Turn Auto Right on or off.");
+         y += YjTheme.ROW;
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Block Mode", this.cfg.blockMode, v -> {
             this.cfg.blockMode = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Fast placement only while holding a block.",
+         addHelp(x, y, w, YjTheme.CTRL_H, "Fast placement only while holding a block.",
             "Fire Charge / pearls always fire one use per press.");
-         y += Theme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, Theme.CTRL_H,
+         y += YjTheme.ROW;
+         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
             () -> this.cfg.toggleKeyCode, code -> {
                this.cfg.toggleKeyCode = code;
                this.markEdited();
                this.commit();
                this.dirty = false;
             }));
-         y += Theme.ROW + 4;
+         y += YjTheme.ROW + 4;
          this.addSlider(x, y, w, "Min CPS", 1, 40, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
-         addHelp(x, y, w, Theme.CTRL_H, "Minimum blocks placed per second.");
-         y += Theme.ROW + 2;
+         addHelp(x, y, w, YjTheme.CTRL_H, "Minimum blocks placed per second.");
+         y += YjTheme.ROW + 2;
          this.addSlider(x, y, w, "Max CPS", 1, 40, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
-         addHelp(x, y, w, Theme.CTRL_H, "Maximum blocks placed per second.");
+         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum blocks placed per second.");
          addActionBar(this::reset);
       }
 
@@ -1095,19 +823,19 @@ public final class ModGuiClient implements ClientModInitializer {
          int x = contentX();
          int w = contentW();
          int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
             this.cfg.enabled = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Turn Ninja Bridge on or off.");
-         y += Theme.ROW;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Auto Switch", this.cfg.autoSwitch, v -> {
+         addHelp(x, y, w, YjTheme.CTRL_H, "Turn Ninja Bridge on or off.");
+         y += YjTheme.ROW;
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Auto Switch", this.cfg.autoSwitch, v -> {
             this.cfg.autoSwitch = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Automatically hold a placeable block while bridging.");
-         y += Theme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, Theme.CTRL_H,
+         addHelp(x, y, w, YjTheme.CTRL_H, "Automatically hold a placeable block while bridging.");
+         y += YjTheme.ROW;
+         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
             () -> this.cfg.toggleKeyCode, code -> {
                this.cfg.toggleKeyCode = code;
                this.markEdited();
@@ -1195,28 +923,28 @@ public final class ModGuiClient implements ClientModInitializer {
          int x = contentX();
          int w = contentW();
          int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
             this.cfg.enabled = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Turn AimAssist on or off.");
-         y += Theme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, Theme.CTRL_H,
+         addHelp(x, y, w, YjTheme.CTRL_H, "Turn AimAssist on or off.");
+         y += YjTheme.ROW;
+         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
             () -> this.cfg.toggleKeyCode, code -> {
                this.cfg.toggleKeyCode = code;
                this.markEdited();
                this.commit();
                this.dirty = false;
             }));
-         y += Theme.ROW + 4;
+         y += YjTheme.ROW + 4;
          this.addSlider(x, y, w, "Speed", 0.01, 1.0, this.cfg.speed, false, v -> this.cfg.speed = (float) v);
-         addHelp(x, y, w, Theme.CTRL_H, "Base turn strength toward the target.");
-         y += Theme.ROW + 2;
+         addHelp(x, y, w, YjTheme.CTRL_H, "Base turn strength toward the target.");
+         y += YjTheme.ROW + 2;
          this.addSlider(x, y, w, "Smoothness", 0.0, 1.0, this.cfg.smoothness, false, v -> this.cfg.smoothness = (float) v);
-         addHelp(x, y, w, Theme.CTRL_H, "Higher = softer, slower aim.");
-         y += Theme.ROW + 2;
+         addHelp(x, y, w, YjTheme.CTRL_H, "Higher = softer, slower aim.");
+         y += YjTheme.ROW + 2;
          this.addSlider(x, y, w, "FOV", 10, 180, this.cfg.fov, false, v -> this.cfg.fov = (float) v);
-         addHelp(x, y, w, Theme.CTRL_H, "Cone (degrees) in which targets are acquired.");
+         addHelp(x, y, w, YjTheme.CTRL_H, "Cone (degrees) in which targets are acquired.");
          addActionBar(this::reset);
       }
 
@@ -1301,36 +1029,36 @@ public final class ModGuiClient implements ClientModInitializer {
          int x = contentX();
          int w = contentW();
          int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
             this.cfg.enabled = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Turn the tracker overlay and box on or off.");
-         y += Theme.ROW;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, Theme.CTRL_H, "Ignore Team", this.cfg.ignoreOwnTeam, v -> {
+         addHelp(x, y, w, YjTheme.CTRL_H, "Turn the tracker overlay and box on or off.");
+         y += YjTheme.ROW;
+         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Ignore Team", this.cfg.ignoreOwnTeam, v -> {
             this.cfg.ignoreOwnTeam = v;
             this.markEdited();
          }));
-         addHelp(x, y, w, Theme.CTRL_H, "Skip players on your own scoreboard team.");
-         y += Theme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, Theme.CTRL_H,
+         addHelp(x, y, w, YjTheme.CTRL_H, "Skip players on your own scoreboard team.");
+         y += YjTheme.ROW;
+         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
             () -> this.cfg.toggleKeyCode, code -> {
                this.cfg.toggleKeyCode = code;
                this.markEdited();
                this.commit();
                this.dirty = false;
             }));
-         y += Theme.ROW + 4;
+         y += YjTheme.ROW + 4;
          this.addSlider(x, y, w, "Range", 1, 128, this.cfg.range, false, v -> this.cfg.range = v);
-         addHelp(x, y, w, Theme.CTRL_H, "Maximum distance (blocks) for alerts and the box.");
-         y += Theme.ROW + 6;
+         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum distance (blocks) for alerts and the box.");
+         y += YjTheme.ROW + 6;
          this.addDrawableChild(ButtonWidget.builder(Text.literal("Edit HUD Position"), b -> {
             if (this.dirty) {
                this.commit();
                this.dirty = false;
             }
             if (this.client != null) this.client.setScreen(new TrackerHudEditorScreen(this, this.cfg));
-         }).dimensions(x, y, w, Theme.CTRL_H).build());
+         }).dimensions(x, y, w, YjTheme.CTRL_H).build());
          addActionBar(this::reset);
       }
 
@@ -1397,7 +1125,7 @@ public final class ModGuiClient implements ClientModInitializer {
       @Override
       protected void init() {
          this.addDrawableChild(ButtonWidget.builder(Text.literal("Done"), b -> this.close())
-            .dimensions(winX() + winW() - Theme.PAD - 66, footerY() + (footerH() - Theme.CTRL_H) / 2, 66, Theme.CTRL_H).build());
+            .dimensions(winX() + winW() - YjTheme.PAD - 66, footerY() + (footerH() - YjTheme.CTRL_H) / 2, 66, YjTheme.CTRL_H).build());
          this.addDrawableChild(ButtonWidget.builder(Text.literal("Reset"), b -> {
             TrackerClient.Config d = new TrackerClient.Config();
             this.cfg.hudOffsetX = d.hudOffsetX;
@@ -1405,7 +1133,7 @@ public final class ModGuiClient implements ClientModInitializer {
             this.markEdited();
             this.commit();
             this.dirty = false;
-         }).dimensions(winX() + winW() - Theme.PAD - 66 - 8 - 56, footerY() + (footerH() - Theme.CTRL_H) / 2, 56, Theme.CTRL_H).build());
+         }).dimensions(winX() + winW() - YjTheme.PAD - 66 - 8 - 56, footerY() + (footerH() - YjTheme.CTRL_H) / 2, 56, YjTheme.CTRL_H).build());
       }
 
       private int previewX() {
@@ -1425,8 +1153,8 @@ public final class ModGuiClient implements ClientModInitializer {
          int px = previewX();
          int py = previewY();
          ctx.fill(px - 4, py - 2, px + pw + 4, py + 10, 0xB0000000);
-         Theme.panel(ctx, px - 5, py - 3, pw + 10, 15, 0x00000000, Theme.ACCENT);
-         ctx.drawText(tr, preview, px, py, Theme.TEXT, false);
+         YjTheme.panel(ctx, px - 5, py - 3, pw + 10, 15, 0x00000000, YjTheme.ACCENT);
+         ctx.drawText(tr, preview, px, py, YjTheme.TEXT, false);
       }
 
       @Override
