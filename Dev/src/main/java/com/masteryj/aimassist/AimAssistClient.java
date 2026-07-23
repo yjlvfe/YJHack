@@ -388,6 +388,19 @@ public final class AimAssistClient implements ClientModInitializer {
       }
    }
 
+   /** Typed save used by the GUI: validates, applies live, and writes the file. */
+   public static void saveConfigStatic(AimAssistClient.Config cfg) {
+      if (cfg == null) return;
+      cfg.normalize();
+      applyRuntimeConfig(cfg);
+      try {
+         Files.createDirectories(CONFIG_PATH.getParent());
+         Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
+      } catch (IOException e) {
+         LOGGER.warn("AimAssist config save failed: {}", e.getMessage());
+      }
+   }
+
    private static int normalizeToggleKeyCode(int keyCode) {
       if (keyCode >= 1000) {
          return keyCode;

@@ -1,0 +1,85 @@
+YJHACK-1.21.5 — JAR & PROJECT-STATE VERIFICATION
+Generated: 2026-07-23 (repair pass v2)
+Method: direct inspection of the real filesystem, git, and JAR contents.
+        No prior report was trusted; every line below was re-derived.
+
+=====================================================================
+1. GROUND-TRUTH ANSWERS (the "short truth report" required before fixes)
+=====================================================================
+Q: Does Dev/bin exist?
+A: NO. `find Dev/bin -type f` returns nothing. The pre-compiled-blob dir was removed.
+
+Q: Does build.gradle inject old .class files?
+A: NO. grep for `bin/main` / `extractGoodModClasses` / `mergeGoodModClasses`
+   in Dev/build.gradle matches ONLY comment lines (35-36) documenting that the
+   hacks were removed. No active injection task exists.
+
+Q: Are all six modules built from source?
+A: YES. Dev/src/main/java/com/masteryj/ contains exactly six sources:
+     aimassist/AimAssistClient.java
+     autoleft/AutoLeftClient.java
+     autoright/AutoRightClient.java
+     modgui/ModGuiClient.java
+     ninjabridge/NinjaBridgeClient.java
+     tracker/TrackerClient.java
+
+Q: Are there duplicate classes inside the JAR?
+A: NO. `jar tf` on the installed JAR, filtered to *.class + `uniq -d`, is EMPTY.
+   Each of the six modules appears once. 46 total entries.
+
+Q: Which JAR was actually run on Lunar Client, and what is its SHA-256?
+A: Path : /home/masteryj/.lunarclient/profiles/1.21/mods/fabric-1.21.5/YJHack-1.21.5.jar
+   SHA  : 5254d1dcd1bb9ab8510b684c557ddb68e99e3f568ae11fe51162f78da50a8f1f
+   Size : 95791 bytes
+   Built: 2026-07-23 15:31:22  (matches the previous repair build; fabric.mod.json version 1.2.0)
+   => The "Not Responding" the user saw IS from the previous source build, not a stale JAR.
+
+Q: Which previous report described the CORRECT state?
+A: changes-made.md / comprehensive-repair-report.html / deleted-files.txt / AGENTS.md
+   (all say "Dev/bin removed, 100% source"). Confirmed correct by the evidence above.
+
+Q: Which previous report was STALE / WRONG?
+A: report.html  (claimed ModGui/Tracker/AimAssist still run from pre-compiled
+   Dev/bin blobs). This is FALSE for the current tree. It has been moved to
+   report/_archive-stale/report.html.stale  so two contradictory official
+   reports no longer coexist.
+
+=====================================================================
+2. ALL JARs NAMED YJHack-1.21.5.jar ON THIS MACHINE
+=====================================================================
+5254d1dcd1bb9ab8510b684c557ddb68e99e3f568ae11fe51162f78da50a8f1f  95791  2026-07-23 15:31
+    /home/masteryj/.lunarclient/profiles/1.21/mods/fabric-1.21.5/YJHack-1.21.5.jar
+    <== INSTALLED & RUN ON LUNAR (previous repair build v1.2.0)
+
+edff29cabeaaba45557f2475f010ec1b96b7ad8ae53eeb22b6a7498bd6f70a4d  92391  2026-07-22 12:13
+    /home/masteryj/Desktop/Mod Maker/YJHack-1.21.5/report/YJHack-1.21.5.jar
+    <== v1.0.0 REFERENCE ("working old JAR") — DO NOT MODIFY
+
+edff29cabeaaba45557f2475f010ec1b96b7ad8ae53eeb22b6a7498bd6f70a4d  92391  2026-07-22 12:13
+    /home/masteryj/Desktop/Mod Maker/YJHack-1.21.5-BACKUP-20260723-150824/report/YJHack-1.21.5.jar
+    <== identical copy of the reference inside the pre-repair backup
+
+90150c6941cdbca862405abdc2b2ff0002e7a5508af995dea92989f1cc618041  89439  2026-07-22 10:09
+    /home/masteryj/.local/share/Trash/files/YJHack-1.21.5.jar
+    <== older trashed artifact, not relevant
+
+=====================================================================
+3. GIT STATE AT START OF THIS PASS
+=====================================================================
+HEAD          : 52ab3ca1f4daef86c5fe84fdb0b809ad7dfa465b
+branch        : repair/full-source-recovery-1.21.5
+git status    : clean
+git diff      : empty
+
+(SHA-256 of the NEW build produced by this pass is appended to
+ report/final-build-output.txt after the rebuild.)
+
+=====================================================================
+4. NEW BUILD (repair v2) — appended 2026-07-23 16:36
+=====================================================================
+Built & installed SHA-256 (identical):
+  706daa61acd3f8fc774e493e5935e06854230a11ba674181b15eda95d7a5178b
+Path (built)    : YJHack-1.21.5.jar (93554 bytes)
+Path (installed): ~/.lunarclient/profiles/1.21/mods/fabric-1.21.5/YJHack-1.21.5.jar
+New class added : com/masteryj/autoright/RightClickPolicy(.class,$Kind.class)
+Duplicate classes: NONE

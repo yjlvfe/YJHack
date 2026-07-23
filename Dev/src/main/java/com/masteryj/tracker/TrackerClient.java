@@ -324,6 +324,19 @@ public final class TrackerClient implements ClientModInitializer {
       }
    }
 
+   /** Typed save used by the GUI: validates, applies live, and writes the file. */
+   public static void saveConfigStatic(TrackerClient.Config cfg) {
+      if (cfg == null) return;
+      cfg.normalize();
+      applyRuntimeConfig(cfg);
+      try {
+         Files.createDirectories(CONFIG_PATH.getParent());
+         Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
+      } catch (IOException e) {
+         LOGGER.warn("Tracker config save failed: {}", e.getMessage());
+      }
+   }
+
    private static int normalizeToggleKeyCode(int keyCode) {
       if (keyCode >= 1000) {
          return keyCode;

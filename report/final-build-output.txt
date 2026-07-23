@@ -1,0 +1,19 @@
+YJHACK-1.21.5 — FINAL BUILD OUTPUT (repair v2)
+Date: 2026-07-23 16:36:36 +0300
+
+Command: ./gradlew clean build   (in Dev/)
+Result : BUILD SUCCESSFUL (9 tasks)
+Only note: TrackerClient uses deprecated HudRenderCallback (valid on 1.21.5).
+
+Built JAR : YJHack-1.21.5.jar
+Size      : 93554 bytes
+SHA-256   : 706daa61acd3f8fc774e493e5935e06854230a11ba674181b15eda95d7a5178b
+
+Installed into Lunar mods dir:
+  /home/masteryj/.lunarclient/profiles/1.21/mods/fabric-1.21.5/YJHack-1.21.5.jar
+  SHA-256: 706daa61acd3f8fc774e493e5935e06854230a11ba674181b15eda95d7a5178b
+  (built == installed: MATCH)
+  Previous installed build backed up as YJHack-1.21.5.jar.prev-5254d1.bak
+
+Headless logic test (rising-edge single-press model): ALL PASS
+  20 separate presses = 20 uses; hold 200 ticks = 1 use; press/release/press = 2 uses.

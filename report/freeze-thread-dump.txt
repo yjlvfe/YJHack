@@ -1,0 +1,66 @@
+FREEZE THREAD DUMP — YJHack-1.21.5
+===================================================================
+STATUS: NO LIVE THREAD DUMP WAS CAPTURED.  (Read this in full.)
+===================================================================
+
+Why there is no jstack/jcmd output here
+---------------------------------------
+Capturing a real thread dump during a "Not Responding" freeze requires the game
+to be RUNNING and frozen so that `jcmd <pid> Thread.print` or `jstack <pid>` can
+attach to the live JVM. This repair was performed in an environment with no
+display and no ability to launch Lunar Client / Minecraft, so the freeze could
+not be reproduced here and no live dump could be taken.
+
+Per the task's honesty rule, the freeze is therefore NOT marked "Fixed"; the
+root cause identified below was removed in code and must be confirmed by the
+user running Lunar (see report/lunar-test-results.md).
+
+HOW TO CAPTURE THE DUMP YOURSELF (if the freeze recurs on the new build)
+------------------------------------------------------------------------
+1. Launch Lunar 1.21.5, enter a world, and reproduce the freeze.
+2. In another terminal find the GAME jvm (not the launcher):
+      jps -l | grep -i ichor        # Lunar's game process (genesis/ichor/lunar.jar)
+   or:
+      pgrep -af 'lunar.jar|genesis'  # pick the java pid running the game
+3. Dump it:
+      jcmd <PID> Thread.print > report/freeze-thread-dump.txt
+   or:
+      jstack -l <PID> > report/freeze-thread-dump.txt
+4. Look at the "Render thread" stack. If it sits in
+   `...applyBlur`, `PostEffectProcessor`, `...renderBackground`, or GL/framebuffer
+   calls, that confirms the blur-path diagnosis below.
+
+STATIC THREAD-LEVEL ANALYSIS (substitute for the live dump)
+------------------------------------------------------------
+Render thread (client main) — the only thread that can produce a Minecraft
+"Not Responding" (the OS event loop is pumped from it):
+
+  * GUI open path (BEFORE this fix):
+      Screen.render()            [verified in bytecode]
+        -> renderBackground()    [auto-called at offset 6]
+             -> applyBlur()       [offset 18]  fullscreen post-process shader
+             -> renderDarkening() [offset 23]  dark gradient
+    Ran EVERY FRAME while any YJHack screen was open, over the live world, with
+    Iris + Sodium + Noxesium loaded (see latest.log). This is the prime suspect
+    for a render-thread stall/hang and is fully removed on the new build
+    (YjScreen.renderBackground no longer calls super / applyBlur).
+
+  * GUI text field (BEFORE this fix):
+      TextFieldWidget change -> save() -> Files.writeString(...) + Class.forName(...)
+    Synchronous file I/O + reflection ON the render thread per keystroke. Removed
+    (typed bridge + debounced save; no reflection).
+
+  * Tracker world render / tick, AimAssist tick, AutoLeft/Right/NinjaBridge tick:
+    bounded loops over world.getPlayers(); single pre-allocated vertex buffer;
+    no unbounded loops, no locks, no file I/O in render. Not stall candidates.
+
+Other threads: no custom threads are spawned by YJHack; all module work runs on
+the client thread via ClientTickEvents / render callbacks. No deadlock is
+possible from mod code (no locks are taken).
+
+CONCLUSION
+----------
+Primary hang candidate = vanilla applyBlur()/renderDarkening() invoked every
+frame through Screen.render()->renderBackground(), triggered because the old
+BaseScreen called super.render() with no renderBackground override. Removed on
+build 706daa61. Confirmation requires the Lunar acceptance run.

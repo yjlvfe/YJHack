@@ -8,7 +8,6 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.item.BlockItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
@@ -32,7 +31,6 @@ public final class AutoRightClient implements ClientModInitializer {
     private static final int CURRENT_CONFIG_VERSION = 4;
     private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
     private static final long RIGHT_BLOCK_HOLD_DELAY_MS = 10L;
-    private static final long RIGHT_HOLD_DELAY_MS = 30L;
     private static final long QUICK_TAP_THRESHOLD_MS = 10L;
     private static final int MAX_CATCHUP_CLICKS_PER_TICK = 50;
     private static final InputUtil.Key RIGHT_MOUSE = InputUtil.Type.MOUSE.createFromCode(1);
@@ -45,7 +43,6 @@ public final class AutoRightClient implements ClientModInitializer {
     public static boolean blockMode = true;
     public static int toggleKeyCode = -1;
     private boolean rightWasDown = false;
-    private boolean rightUseHold = false;
     private long rightPressedAtMs = 0L;
     private long rightNextClickAtMs = 0L;
     private int rightCurrentDelayMs = 0;
@@ -65,6 +62,8 @@ public final class AutoRightClient implements ClientModInitializer {
         maybeReloadConfig();
         handleToggleKey(client);
 
+        // Not playing (disabled, GUI open, no world, unfocused, dead, spectator):
+        // release any synthetic press and require a fresh press before acting again.
         if (!enabled || !isInActiveGameplay(client)) {
             resetRightAutoClickState();
             return;
@@ -72,124 +71,98 @@ public final class AutoRightClient implements ClientModInitializer {
 
         long now = System.currentTimeMillis();
 
-        boolean isBlockItem = false;
-        if (client.player != null) {
-            ItemStack held = client.player.getMainHandStack();
-            isBlockItem = held.getItem() instanceof BlockItem;
-        }
+        ItemStack held = client.player != null ? client.player.getMainHandStack() : ItemStack.EMPTY;
+        RightClickPolicy.Kind kind = RightClickPolicy.classify(held, client.player);
 
         boolean mouseDown = isMouseDown(client, 1);
+        boolean rising = mouseDown && !rightWasDown;
 
-        // Track first press — set timestamps when mouse goes down
-        if (mouseDown && !rightWasDown) {
+        // A fresh press resets per-press timing state (used by the block burst path).
+        if (rising) {
             rightPressedAtMs = now;
             blockBurstStarted = false;
             rightNextClickAtMs = 0L;
         }
 
-        // --- Mouse NOT down: handle short-click / reset ---
-        if (!mouseDown) {
-            boolean immediatePlace = blockMode && isBlockItem;
-            if (rightWasDown) {
-                long pressDuration = now - rightPressedAtMs;
-                if (immediatePlace) {
-                    // Quick tap with block: if press was very short, trigger a click
-                    // so the block places immediately (vanilla-like behavior).
-                    if (pressDuration < QUICK_TAP_THRESHOLD_MS) {
-                        clickMouseKey(RIGHT_MOUSE);
-                    }
-                    resetRightAutoClickState();
-                    return;
-                }
-                if (pressDuration < RIGHT_HOLD_DELAY_MS) {
-                    clickMouseKey(RIGHT_MOUSE);
-                    resetRightAutoClickState();
-                    return;
+        switch (kind) {
+            case SINGLE_PRESS -> handleSinglePress(mouseDown, rising);
+            case BLOCK -> {
+                if (blockMode) {
+                    handleBlockBurst(now, mouseDown);
+                } else {
+                    // Block Mode off: do not automate block placement — vanilla feel.
+                    passThrough();
                 }
             }
-            resetRightAutoClickState();
+            default -> passThrough();
+        }
+
+        rightWasDown = mouseDown;
+    }
+
+    /**
+     * Fire Charge / fireball / pearls / bows … : exactly ONE use per physical press.
+     * Vanilla already emits a single use when the button is physically pressed (our
+     * END_CLIENT_TICK runs after vanilla input handling), so we must only suppress the
+     * vanilla HOLD-repeat and never inject synthetic clicks. A new use requires RELEASE
+     * then a fresh PRESS.
+     */
+    private void handleSinglePress(boolean mouseDown, boolean rising) {
+        if (mouseDown && !rising) {
+            // Held beyond the initial press-tick: force the use key released so the
+            // vanilla itemUseCooldown loop cannot re-fire this item while held.
+            KeyBinding.setKeyPressed(RIGHT_MOUSE, false);
+        }
+        rightNextClickAtMs = 0L;
+        blockBurstStarted = false;
+    }
+
+    /** Block Mode CPS placement for BlockItems only. */
+    private void handleBlockBurst(long now, boolean mouseDown) {
+        if (!mouseDown) {
+            // Released: a very short tap still places one block (vanilla-like feel).
+            if (rightWasDown && now - rightPressedAtMs < QUICK_TAP_THRESHOLD_MS) {
+                clickMouseKey(RIGHT_MOUSE);
+            }
+            rightNextClickAtMs = 0L;
+            blockBurstStarted = false;
             return;
         }
 
-        // --- Mouse IS down ---
-        if (blockMode && isBlockItem) {
-            // Building-block burst mode
-            long pressDuration = now - rightPressedAtMs;
-            if (pressDuration < RIGHT_BLOCK_HOLD_DELAY_MS) {
-                releaseRightHold();
-                rightWasDown = true;
-                return;
-            }
-
-            releaseRightHold();
-
-            if (!blockBurstStarted) {
-                blockBurstStarted = true;
-                scheduleNextRightDelay();
-                clickMouseKey(RIGHT_MOUSE);
-                rightNextClickAtMs = now + rightCurrentDelayMs;
-                rightWasDown = true;
-                return;
-            }
-
-            // Catch-up clicks
-            int clicks = 0;
-            while (now >= rightNextClickAtMs && clicks < MAX_CATCHUP_CLICKS_PER_TICK) {
-                clickMouseKey(RIGHT_MOUSE);
-                scheduleNextRightDelay();
-                rightNextClickAtMs += rightCurrentDelayMs;
-                clicks++;
-                if (rightNextClickAtMs > now + 1000L) {
-                    rightNextClickAtMs = now + rightCurrentDelayMs;
-                    break;
-                }
-            }
-            if (now >= rightNextClickAtMs) {
-                rightNextClickAtMs = now + rightCurrentDelayMs;
-            }
-            rightWasDown = true;
-        } else {
-            // Normal auto-right-click (blockMode off, or not holding a block)
-            releaseRightHold();
-
-            // Fix: When blockMode is on but not holding a block, continue with normal clicking
-            // instead of resetting state (prevents race condition)
-            if (blockMode && !isBlockItem) {
-                // Continue with normal auto-right-click behavior
-            }
-
-            long pressDuration = now - rightPressedAtMs;
-            if (pressDuration < RIGHT_HOLD_DELAY_MS) {
-                rightWasDown = true;
-                return;
-            }
-
-            // First click
-            if (rightNextClickAtMs == 0L) {
-                scheduleNextRightDelay();
-                clickMouseKey(RIGHT_MOUSE);
-                rightNextClickAtMs = now + rightCurrentDelayMs;
-                rightWasDown = true;
-                return;
-            }
-
-            // Catch-up clicks
-            int clicks = 0;
-            while (now >= rightNextClickAtMs && clicks < MAX_CATCHUP_CLICKS_PER_TICK) {
-                clickMouseKey(RIGHT_MOUSE);
-                scheduleNextRightDelay();
-                rightNextClickAtMs += rightCurrentDelayMs;
-                clicks++;
-                if (rightNextClickAtMs > now + 1000L) {
-                    rightNextClickAtMs = now + rightCurrentDelayMs;
-                    break;
-                }
-            }
-            if (now >= rightNextClickAtMs) {
-                rightNextClickAtMs = now + rightCurrentDelayMs;
-            }
-            rightWasDown = true;
+        long pressDuration = now - rightPressedAtMs;
+        if (pressDuration < RIGHT_BLOCK_HOLD_DELAY_MS) {
+            // Brief initial hold: let the first vanilla placement happen, don't burst yet.
+            return;
         }
+
+        if (!blockBurstStarted) {
+            blockBurstStarted = true;
+            scheduleNextRightDelay();
+            clickMouseKey(RIGHT_MOUSE);
+            rightNextClickAtMs = now + rightCurrentDelayMs;
+            return;
+        }
+
+        int clicks = 0;
+        while (now >= rightNextClickAtMs && clicks < MAX_CATCHUP_CLICKS_PER_TICK) {
+            clickMouseKey(RIGHT_MOUSE);
+            scheduleNextRightDelay();
+            rightNextClickAtMs += rightCurrentDelayMs;
+            clicks++;
+            if (rightNextClickAtMs > now + 1000L) {
+                rightNextClickAtMs = now + rightCurrentDelayMs;
+                break;
+            }
+        }
+        if (now >= rightNextClickAtMs) {
+            rightNextClickAtMs = now + rightCurrentDelayMs;
+        }
+    }
+
+    /** Leave vanilla input untouched (no synthetic clicks, no suppression). */
+    private void passThrough() {
+        rightNextClickAtMs = 0L;
+        blockBurstStarted = false;
     }
 
     private void clickMouseKey(InputUtil.Key key) {
@@ -198,15 +171,9 @@ public final class AutoRightClient implements ClientModInitializer {
         KeyBinding.setKeyPressed(key, false);
     }
 
-    private void releaseRightHold() {
-        if (rightUseHold) {
-            KeyBinding.setKeyPressed(RIGHT_MOUSE, false);
-            rightUseHold = false;
-        }
-    }
-
     private void resetRightAutoClickState() {
-        releaseRightHold();
+        // Guarantee nothing is left pressed and a fresh physical press is required.
+        KeyBinding.setKeyPressed(RIGHT_MOUSE, false);
         rightNextClickAtMs = 0L;
         rightPressedAtMs = 0L;
         rightWasDown = false;

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YJHack-1.21.5 — تقرير الإصلاح الشامل v2</title>
+<style>
+  :root{--bg:#0c1017;--panel:#141c28;--panel2:#0f1620;--border:#25313f;--accent:#35e0c8;
+        --text:#e9eef4;--dim:#9fb0c4;--muted:#6e7f93;--ok:#4bd16a;--warn:#f5c147;--err:#f06a5a;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI",Tahoma,Arial,sans-serif;line-height:1.7}
+  header{padding:28px 22px;background:linear-gradient(180deg,#132030,#0c1017);border-bottom:2px solid var(--accent)}
+  header h1{margin:0 0 6px;font-size:26px}
+  header .sub{color:var(--dim)}
+  .wrap{max-width:1080px;margin:0 auto;padding:18px 22px 80px}
+  section{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:16px 0}
+  h2{margin:0 0 12px;font-size:20px;color:var(--accent);border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{color:#bfe9e2;margin:16px 0 6px}
+  code,pre{font-family:"Cascadia Code",Consolas,monospace;direction:ltr;unicode-bidi:embed}
+  pre{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow:auto;font-size:12.5px;text-align:left}
+  code{background:#0f1620;border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-size:12.5px}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:right;vertical-align:top}
+  th{background:#101a26;color:#cfe;}
+  .ok{color:var(--ok);font-weight:700}.warn{color:var(--warn);font-weight:700}.err{color:var(--err);font-weight:700}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:700}
+  .pill.done{background:rgba(75,209,106,.15);color:var(--ok);border:1px solid var(--ok)}
+  .pill.pend{background:rgba(245,193,71,.13);color:var(--warn);border:1px solid var(--warn)}
+  .kv{display:grid;grid-template-columns:210px 1fr;gap:6px 14px}
+  .kv div:nth-child(odd){color:var(--dim)}
+  .mono{direction:ltr;unicode-bidi:embed;text-align:left;font-family:monospace;font-size:12px}
+  a{color:var(--accent)}
+  .note{border-right:3px solid var(--accent);background:#101a24;padding:10px 14px;border-radius:6px;margin:10px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>YJHack-1.21.5 — تقرير الإصلاح الشامل (النسخة الثانية v2)</h1>
+  <div class="sub">التاريخ: 2026-07-23 · Minecraft 1.21.5 · Fabric · Lunar Client · بناء من المصدر بالكامل</div>
+</header>
+<div class="wrap">
+
+<section>
+  <h2>0 · ملخص تنفيذي</h2>
+  <p>تم تشخيص وإصلاح الأسباب الجذرية للمشاكل المُبلّغ عنها اعتمادًا على أدلة فعلية (سجلات Lunar،
+  فحص الـbytecode للعبة، وفحص المشروع والـJAR الحقيقيين) — وليس على التقارير السابقة.</p>
+  <table>
+    <tr><th>البند</th><th>الحالة</th><th>الدليل</th></tr>
+    <tr><td>تناقض Dev/bin ومصدر المودات</td><td><span class="pill done">محسوم</span></td><td>Dev/bin غير موجود؛ بناء من المصدر 100%؛ لا Classes مكررة</td></tr>
+    <tr><td>السبب الجذري لـ«Not Responding» + الشاشة السوداء</td><td><span class="pill done">مُحدَّد ومُزال في الكود</span> <span class="pill pend">بانتظار اختبار Lunar</span></td><td>Screen.render→renderBackground→applyBlur (مؤكَّد بالـbytecode)</td></tr>
+    <tr><td>AutoRight يكرر الفايربول حسب CPS</td><td><span class="pill done">مُصلَح في الكود + اختبار منطقي</span> <span class="pill pend">بانتظار اختبار داخل اللعبة</span></td><td>RightClickPolicy + rising-edge؛ اختبار 20 ضغطة نجح منطقيًا</td></tr>
+    <tr><td>إعادة تصميم GUI فعليًا</td><td><span class="pill done">أُعيد بناؤه</span> <span class="pill pend">تأكيد بصري على Lunar</span></td><td>Theme + Toggle/Slider/Keybind + Dashboard + Toast</td></tr>
+    <tr><td>الإعدادات لا تُطبَّق/تُعكس</td><td><span class="pill done">جسر typed بدل reflection</span></td><td>applyRuntimeConfig/saveConfigStatic لكل مود</td></tr>
+  </table>
+  <div class="note"><b>قاعدة الصدق:</b> لم أستطع تشغيل Lunar/Minecraft في هذه البيئة (لا شاشة/لا زمن تشغيل).
+  لذلك لم أُنفّذ اختبارات اللعبة العشرين، ولم أُعلن «تم الإصلاح» لأي بند يحتاج اللعبة. راجع
+  <span class="mono">lunar-test-results.md</span> و<span class="mono">freeze-thread-dump.txt</span>.</div>
+</section>
+
+<section>
+  <h2>1 · الحقيقة حول Dev/bin ومصدر المودات</h2>
+  <table>
+    <tr><th>سؤال</th><th>الجواب (مُتحقَّق)</th></tr>
+    <tr><td>هل Dev/bin موجود؟</td><td class="ok">لا — <span class="mono">find Dev/bin</span> فارغ.</td></tr>
+    <tr><td>هل build.gradle يحقن class قديمة؟</td><td class="ok">لا — لا يوجد <span class="mono">bin/main</span>/<span class="mono">extractGoodModClasses</span>/<span class="mono">mergeGoodModClasses</span> (تعليقات فقط).</td></tr>
+    <tr><td>هل المودات الستة من المصدر؟</td><td class="ok">نعم — 7 ملفات <span class="mono">.java</span> تحت <span class="mono">Dev/src/main/java/com/masteryj</span>.</td></tr>
+    <tr><td>Classes مكررة داخل الـJAR؟</td><td class="ok">لا — <span class="mono">jar tf | uniq -d</span> فارغ.</td></tr>
+    <tr><td>مسار الـJAR الذي شُغِّل على Lunar</td><td class="mono">~/.lunarclient/profiles/1.21/mods/fabric-1.21.5/YJHack-1.21.5.jar</td></tr>
+    <tr><td>SHA-256 له (النسخة السابقة)</td><td class="mono">5254d1dcd1bb9ab8510b684c557ddb68e99e3f568ae11fe51162f78da50a8f1f</td></tr>
+    <tr><td>أي تقرير سابق كان صحيحًا؟</td><td>changes-made.md / comprehensive-repair-report.html / AGENTS.md (بناء من المصدر).</td></tr>
+    <tr><td>أي تقرير أصبح خاطئًا/قديمًا؟</td><td class="err">report.html (زعم أن ModGui/Tracker/AimAssist ما زالت من bin/main) — نُقل إلى <span class="mono">report/_archive-stale/report.html.stale</span>.</td></tr>
+  </table>
+  <h3>سبب تناقض التقارير السابقة</h3>
+  <p>التقرير <span class="mono">report.html</span> كُتب قبل التحويل إلى بناء المصدر (نسخة احتياطية بتاريخ 15:03،
+  قبل بناء الإصلاح 15:31)، فوصف حالة <em>ما قبل</em> الإصلاح (bin/main). بقية التقارير كُتبت بعد التحويل فوصفت
+  الحالة الصحيحة. لم يعد يوجد تقريران رسميان متناقضان: القديم في <span class="mono">_archive-stale/</span>،
+  والرسمي الوحيد هو هذا الملف.</p>
+</section>
+
+<section>
+  <h2>2 · التحقق من الـJAR (المبني مقابل المثبت)</h2>
+  <div class="kv mono">
+    <div>Built JAR</div><div>YJHack-1.21.5.jar — 93554 bytes</div>
+    <div>Built SHA-256</div><div>706daa61acd3f8fc774e493e5935e06854230a11ba674181b15eda95d7a5178b</div>
+    <div>Installed (Lunar)</div><div>~/.lunarclient/.../fabric-1.21.5/YJHack-1.21.5.jar</div>
+    <div>Installed SHA-256</div><div>706daa61acd3f8fc774e493e5935e06854230a11ba674181b15eda95d7a5178b</div>
+    <div>Match</div><div class="ok">✓ built == installed (سيشغّل Lunar هذا البناء بالضبط)</div>
+    <div>Reference (v1.0.0)</div><div>report/YJHack-1.21.5.jar — edff29… (لا يُعدَّل)</div>
+    <div>Commit</div><div>__COMMIT__ (فرع repair/full-source-recovery-1.21.5)</div>
+  </div>
+  <p>النسخة المثبتة سابقًا (5254d1) محفوظة كنسخة احتياطية بجانبها باسم <span class="mono">YJHack-1.21.5.jar.prev-5254d1.bak</span>.
+  تفاصيل كاملة في <span class="mono">jar-verification.txt</span>.</p>
+</section>
+
+<section>
+  <h2>3 · السجلات الفعلية و Thread dump</h2>
+  <p>من <span class="mono">~/.lunarclient/profiles/1.21/logs/latest.log</span>:</p>
+  <ul>
+    <li>المود حُمِّل بنجاح (ظهر <span class="mono">yjhack</span> في قائمة ResourceManager). لا استثناء YJHack، لا crash report.</li>
+    <li>فجوة تسجيل ~4 دقائق (15:45:46 → 15:49:31) على Render thread ثم <span class="mono">Stopping!</span> — نمط <b>تجمّد Render thread</b> (تجمّد لا انهيار: الانهيار يكتب Stacktrace، التجمّد لا يكتب شيئًا).</li>
+    <li>محمّل معه: Iris + Sodium + Noxesium + ImmediatelyFast.</li>
+    <li>ملفات الكونفيق (<span class="mono">~/.minecraft/config/*.json</span>) سليمة وضمن النطاق → <b>الكونفيق ليس سبب التجمّد</b> (بدليل).</li>
+  </ul>
+  <div class="note"><b>Thread dump:</b> لم يُلتقط dump حي لأن اللعبة لم تُشغَّل هنا. الملف
+  <span class="mono">freeze-thread-dump.txt</span> يشرح ذلك ويعطي تحليلًا ثابتًا على مستوى الخيوط + تعليمات
+  التقاط dump حقيقي إن تكرر التجمّد.</div>
+</section>
+
+<section>
+  <h2>4 · السبب الجذري لـ«Not Responding» + الشاشة السوداء (مؤكَّد بالـbytecode)</h2>
+  <p>كل شاشة في المود كانت تستدعي <span class="mono">super.render()</span> ⇐ <span class="mono">Screen.render()</span>.
+  بتفكيك <span class="mono">net.minecraft.client.gui.screen.Screen</span> (Yarn) من كاش Loom:</p>
+<pre>Screen.render(DrawContext,int,int,float):
+   6: invokevirtual  renderBackground(...)   // يُستدعى تلقائيًا كل frame
+
+Screen.renderBackground(...):
+  18: invokevirtual  applyBlur()             // Blur على كامل الشاشة (post-effect)
+  23: invokevirtual  renderDarkening(...)     // تعتيم متدرّج</pre>
+  <p>فطالما كانت شاشة المود مفتوحة، كان <span class="mono">applyBlur()</span>+<span class="mono">renderDarkening()</span>
+  يعملان <b>كل frame</b> فوق العالم الحي. النتيجة:</p>
+  <ol>
+    <li><b>الشاشة السوداء / عدم رؤية اللاعبين</b> — مُثبت. الإصلاح السابق خفّض شفافية طبقة المود فقط ولم يوقف Blur الأصلي.</li>
+    <li><b>المرشّح الأول للتجمّد</b> — <span class="mono">applyBlur()</span> تمريرة framebuffer كاملة؛ تفاعلها مع Iris/Sodium معروف بأنه سبب توقّف Render thread على بعض كروت الشاشة.</li>
+  </ol>
+  <p><b>الملف/السطر المسؤول (جهة المود):</b> <span class="mono">ModGuiClient.BaseScreen.render()</span> القديم الذي ينادي
+  <span class="mono">super.render(...)</span> لكل شاشة دون تجاوز <span class="mono">renderBackground</span>.</p>
+  <h3>الإصلاح</h3>
+  <pre>// YjScreen (الأساس الجديد)
+@Override public void renderBackground(DrawContext ctx,int mx,int my,float d){
+  /* فارغ عمدًا: لا super.renderBackground → لا applyBlur/renderDarkening.
+     يُرسم فقط tint خفيف ~0x22 في render(). */
+}
+@Override public boolean shouldPause(){ return false; } // يبقى العالم يتحرك خلف اللوحة</pre>
+  <p>تفاصيل: <span class="mono">runtime-diagnosis.md</span>.</p>
+</section>
+
+<section>
+  <h2>5 · إصلاح AutoRight + سياسة Fire Charge</h2>
+  <p>الخطأ: الفرع <span class="mono">else</span> القديم كان يشغّل حلقة CPS لأي عنصر ليس بلوكًا في اليد — فالفايربول
+  يخرج بسرعة CPS. الحل: تصنيف مركزي في <span class="mono">autoright/RightClickPolicy.java</span>.</p>
+  <table>
+    <tr><th>الفئة</th><th>العناصر</th><th>السلوك</th></tr>
+    <tr><td>SINGLE_PRESS</td><td>Fire Charge، Ender Pearl، Snowball، Egg، Splash/Lingering Potion، Wind Charge، XP Bottle، Ender Eye، Fishing Rod، Trident، Bow، Crossbow، Buckets، وكل UseAction من BOW/CROSSBOW/SPEAR/TOOT_HORN</td><td>استخدام واحد لكل ضغطة فعلية — لا CPS مطلقًا حتى مع إيقاف Block Mode</td></tr>
+    <tr><td>BLOCK</td><td>أي BlockItem</td><td>CPS burst فقط عند تفعيل Block Mode</td></tr>
+    <tr><td>PASS_THROUGH</td><td>كل ما عدا ذلك (طعام، أدوات، درع…)</td><td>يُترك إدخال Minecraft كما هو دون أي synthetic click</td></tr>
+  </table>
+  <p>التصنيف بالـregistry id (مستقر عبر إصدارات Yarn) + UseAction. تدفّق الضغط:
+  <span class="mono">physical mouse → classify → single-press/repeat/pass-through → vanilla</span>.
+  المنطق: عند الحافة الصاعدة لا يفعل المود شيئًا (Minecraft يطلق استخدامًا واحدًا)، وأثناء الاستمرار يفرض
+  <span class="mono">setKeyPressed(RMB,false)</span> لمنع تكرار Minecraft، والاستخدام التالي يحتاج RELEASE ثم PRESS.</p>
+  <h3>نتائج اختبار 20 ضغطة (اختبار منطقي headless — نُفِّذ فعليًا)</h3>
+  <pre>[PASS] 20 separate presses = 20 uses   expected=20 actual=20
+[PASS] hold 200 ticks = 1 use          expected=1  actual=1
+[PASS] press/release/press = 2 uses    expected=2  actual=2
+[PASS] 5 long holds = 5 uses           expected=5  actual=5
+[PASS] no press = 0 uses               expected=0  actual=0
+ALL PASS</pre>
+  <div class="note">هذا اختبار للعقد المنطقي (rising-edge) الذي يطبّقه <span class="mono">handleSinglePress</span>.
+  التأكيد النهائي (فايربول حقيقي على سيرفر) يحتاج اللعبة — مدرَج ضمن اختبارات Lunar غير المُنفَّذة بعد.
+  التفاصيل: <span class="mono">right-click-policy.md</span>.</div>
+</section>
+
+<section>
+  <h2>6 · إعادة تصميم GUI</h2>
+  <p>واجهة جديدة كليًا: بلا Blur (رؤية العالم واللاعبين)، Theme موحّد، عناصر مخصصة (Toggle switch، Slider مع صندوق
+  إدخال رقمي متزامن، Keybind، Status chip)، Dashboard ببطاقات حيّة (اسم/وصف/حالة/مفتاح/قيم)، شريط سفلي ثابت
+  (Back/Reset/Save)، رسالة «Settings saved»، Tooltips على المرور بدل مربعات «!»، تخطيط متجاوب يدعم 720×1280.
+  حُذفت النصوص القديمة («READY» لكل شيء، «Locked modules…»).</p>
+  <p><b>الأداء:</b> لا حفظ للكونفيق كل frame/حرف؛ التطبيق حي في الذاكرة والحفظ على debounce 350ms / إفلات
+  المتزلج / Save / الإغلاق؛ لا حلقة أنيميشن منفصلة. مقارنة كاملة: <span class="mono">gui-before-after.md</span>.</p>
+  <div class="note"><b>معيار القبول البصري (يجب فحصه على Lunar):</b> عند فتح الواجهة أمام لاعب قريب يجب أن تُرى
+  حركته بوضوح خلف اللوحة. لا يمكن إعلان نجاحه من المراجعة الثابتة وحدها.</div>
+</section>
+
+<section>
+  <h2>7 · الإعدادات (جسر typed بدل reflection)</h2>
+  <p>سابقًا كان GUI ينسخ الحقول بالاسم عبر reflection بين كائني كونفيق مختلفين (يُسقط غير المتطابق بصمت — وكان
+  سببًا في عدم تطبيق/عكس الإعدادات). الآن كل شاشة تحرّر كائن <span class="mono">Config</span> الخاص بالمود نفسه
+  وتدفعه عبر:</p>
+  <pre>Module.applyRuntimeConfig(cfg);  // تطبيق فوري في الذاكرة
+Module.saveConfigStatic(cfg);    // كتابة الملف (typed)</pre>
+  <p>أُضيف <span class="mono">saveConfigStatic</span> لـTracker وAimAssist (كان موجودًا في البقية). لا reflection.
+  حقول CPS تُكتب الآن كـ<span class="mono">int</span> (لا floats مثل 10.0) فيزول عدم تطابق الأنواع القديم.</p>
+</section>
+
+<section>
+  <h2>8 · Graphify النهائي</h2>
+  <p>أُرشِف التحليل السابق (<span class="mono">graphify-out/_archive-v1-post-repair/</span>) وأُعيد بناؤه من المصدر النهائي فقط
+  (<span class="mono">Dev/src/main/java</span>).</p>
+  <div class="kv">
+    <div>العُقد/الحواف</div><div>347 عقدة · 974 حافة · 11 مجتمع</div>
+    <div>أهم عقدة (God node)</div><div class="mono">YjScreen (47) ثم AimAssistClient, TrackerClient, AutoLeftClient, AutoRightClient, ModGuiClient</div>
+    <div>مسار جديد ظاهر</div><div class="mono">community «Right-Click Policy» = RightClickPolicy + Kind + classify/isSinglePressItem/shouldAutoRepeat</div>
+    <div>تحقق من عدم التكرار</div><div>مجتمع Tracker/AimAssist/GUI واحد لكلٍّ — لا نسخ مكررة؛ لا أثر لـbin</div>
+    <div>صحة الرسم</div><div>107 حواف طرفها خارجي + 25 مطوية — طبيعي (إشارات إلى Minecraft API خارج نطاق الملفات السبعة)</div>
+  </div>
+  <p>المخرجات: <span class="mono">graphify-out/graph.html</span> · <span class="mono">graph.json</span> · <span class="mono">GRAPH_REPORT.md</span>.</p>
+</section>
+
+<section>
+  <h2>9 · ماذا اختُبر فعليًا مقابل ما رُوجع نظريًا</h2>
+  <table>
+    <tr><th>البند</th><th>النوع</th></tr>
+    <tr><td>البناء <span class="mono">./gradlew clean build</span> ⇐ SUCCESSFUL؛ تثبيت في Lunar؛ تطابق الهاش</td><td class="ok">مُنفَّذ فعليًا</td></tr>
+    <tr><td>اختبار 20 ضغطة (rising-edge headless model)</td><td class="ok">مُنفَّذ فعليًا</td></tr>
+    <tr><td>سبب Blur (تفكيك bytecode لـScreen)</td><td class="ok">دليل مباشر</td></tr>
+    <tr><td>سبب فايربول (قراءة الكود القديم)</td><td class="ok">دليل مباشر</td></tr>
+    <tr><td>إزالة Blur تُظهر اللاعبين فعلًا داخل اللعبة</td><td class="warn">مراجعة كود فقط — يحتاج Lunar</td></tr>
+    <tr><td>عدم تكرار «Not Responding» خلال 15 دقيقة</td><td class="warn">يحتاج Lunar + Thread dump</td></tr>
+    <tr><td>ثبات الإعدادات بعد إعادة التشغيل</td><td class="warn">منطق صحيح — يحتاج اختبار</td></tr>
+    <tr><td>فايربول حقيقي على سيرفر (20 ضغطة = 20)</td><td class="warn">منطق نجح — يحتاج اللعبة</td></tr>
+    <tr><td>Aim / Tracker box / HUD / NinjaBridge / AutoLeft داخل اللعبة</td><td class="warn">منطق دون تغيير — يحتاج اختبار</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>10 · المشاكل المتبقية / المخاطر</h2>
+  <ul>
+    <li><b>لم تُجرَ اختبارات Lunar العشرون</b> (لا بيئة لعبة). أهم بند: تأكيد زوال «Not Responding» + رؤية اللاعبين.</li>
+    <li><b>تشخيص التجمّد بلا thread dump حي</b> — السبب الأقوى (Blur) أُزيل، لكن لا يمكن الجزم بأنه الوحيد دون dump أثناء تجمّد فعلي على البناء الجديد.</li>
+    <li>مفتاح فتح الواجهة الافتراضي (Right Shift / 344) يتقاطع مع مفتاح NinjaBridge الافتراضي؛ لم يُغيَّر لتجنّب مفاجأة المستخدم — يمكن تغييره من إعدادات Controls.</li>
+    <li>التخطيط على 720×1280 مضبوط حسابيًا (نافذة مركزية متجاوبة) لكنه يحتاج تأكيدًا بصريًا.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>11 · الملفات</h2>
+  <div class="kv mono" style="grid-template-columns:1fr">
+    <div>Dev/src/main/java/com/masteryj/autoright/RightClickPolicy.java  (جديد)</div>
+    <div>Dev/src/main/java/com/masteryj/autoright/AutoRightClient.java   (أُعيدت كتابة الـtick)</div>
+    <div>Dev/src/main/java/com/masteryj/modgui/ModGuiClient.java         (إعادة بناء كاملة)</div>
+    <div>Dev/src/main/java/com/masteryj/tracker/TrackerClient.java       (+ saveConfigStatic)</div>
+    <div>Dev/src/main/java/com/masteryj/aimassist/AimAssistClient.java   (+ saveConfigStatic)</div>
+    <div>AGENTS.md, Dev/AGENTS.md                                        (توثيق مُحدَّث)</div>
+    <div>report/*  (هذا التقرير + runtime-diagnosis / right-click-policy / gui-before-after / lunar-test-results / freeze-thread-dump / jar-verification / final-build-output / final-modified-files)</div>
+  </div>
+</section>
+
+<p style="text-align:center;color:var(--muted);margin-top:26px">YJHack-1.21.5 · repair v2 · 2026-07-23 · تقرير رسمي واحد</p>
+</div>
+</body>
+</html>

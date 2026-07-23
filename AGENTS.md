@@ -5,7 +5,9 @@
 **Stack:** Minecraft 1.21.5 + Fabric Loom 1.10.5 + Java 21 + Gradle 8.14.4
 
 ## OVERVIEW
-All-in-one client-side Fabric mod — 6 modules bundled into one JAR. Source in `Dev/`; pre-compiled classes from original `YJHack.jar` in `Dev/bin/main/`.
+All-in-one client-side Fabric mod — 6 modules bundled into one JAR. **100% source** in
+`Dev/src/main/java` (no `Dev/bin/`, no class injection — verified 2026-07-23). The working
+reference build is `report/YJHack-1.21.5.jar` (v1.0.0, do not modify).
 
 ## STRUCTURE
 ```
@@ -27,8 +29,11 @@ YJHack-1.21.5/
 | **Detailed docs** | `YJHack-Project-Details.md` | Complete module-by-module analysis in Arabic |
 
 ## KEY FACTS
-- **REPAIRED 2026-07-23:** now **100% source-based** — `Dev/bin/` blobs removed, all 6 modules
-  build from `src/main/java`. See `report/comprehensive-repair-report.html`.
+- **REPAIRED 2026-07-23 (v2):** 100% source-based (`Dev/bin/` gone). GUI redesigned with **no
+  vanilla blur** (`YjScreen.renderBackground` overridden) — was the cause of the dark screen and
+  render-thread stall. AutoRight now routes discrete items (Fire Charge, pearls, bow…) through
+  `autoright/RightClickPolicy` as **single-press** (one use per press, no CPS). Config is applied
+  through a typed bridge (no reflection). See `report/comprehensive-repair-report-v2.html`.
 - **Git**: tracked; `.gitignore` present (ignores build/, run/, graphify-out/, generated jars/html)
 - **6 entrypoints** (load order): ModGui → Tracker → AimAssist → AutoLeft → AutoRight → NinjaBridge
 - **CPS:** `randomInt(minCps, maxCps)` — no Gaussian, no jitter, no fluctuation
