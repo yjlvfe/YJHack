@@ -700,7 +700,7 @@ public final class ModGuiClient implements ClientModInitializer {
    // =====================================================================
    private static final class DashboardScreen extends YjScreen {
       private record Card(int x, int y, int w, int h, String id, String label, String desc,
-                          Supplier<Boolean> enabled, Supplier<Integer> key, Supplier<String> summary) {
+                          Supplier<Boolean> enabled, Supplier<String> summary) {
          boolean contains(double mx, double my) {
             return mx >= x && mx <= x + w && my >= y && my <= y + h;
          }
@@ -719,7 +719,7 @@ public final class ModGuiClient implements ClientModInitializer {
 
       @Override
       protected String headerStatus() {
-         return enabledCount() + "/5 modules on";
+         return enabledCount() + " active";
       }
 
       private static int enabledCount() {
@@ -735,6 +735,7 @@ public final class ModGuiClient implements ClientModInitializer {
       @Override
       protected void init() {
          this.cards.clear();
+         this.clearHelps();
          int gap = 8;
          int cols = contentW() >= 300 ? 2 : 1;
          int cardW = (contentW() - gap * (cols - 1)) / cols;
@@ -742,59 +743,72 @@ public final class ModGuiClient implements ClientModInitializer {
          int x0 = contentX();
          int y0 = contentTop() + 28;
          int i = 0;
+         // Card face stays to three lines (name / short desc / one key value); the
+         // remaining detail (toggle key + secondary flag) moves to the hover tooltip.
          i = addCard(i, cols, cardW, cardH, gap, x0, y0, "autoleft", "Auto Left", "Left-click automation",
             () -> AutoLeftClient.config != null && AutoLeftClient.config.enabled,
             () -> AutoLeftClient.config != null ? AutoLeftClient.config.toggleKeyCode : -1,
-            () -> AutoLeftClient.config == null ? "" : "CPS " + AutoLeftClient.config.minCps + "-" + AutoLeftClient.config.maxCps
-               + (AutoLeftClient.config.weaponCheck ? "  •  Weapon" : ""));
-         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "autoright", "Auto Right", "Right-click / block placement",
+            () -> AutoLeftClient.config == null ? "" : "CPS " + AutoLeftClient.config.minCps + "-" + AutoLeftClient.config.maxCps,
+            AutoLeftClient.config != null && AutoLeftClient.config.weaponCheck ? "Weapon mode: on" : "Weapon mode: off");
+         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "autoright", "Auto Right", "Right-click / blocks",
             () -> AutoRightClient.config != null && AutoRightClient.config.enabled,
             () -> AutoRightClient.config != null ? AutoRightClient.config.toggleKeyCode : -1,
-            () -> AutoRightClient.config == null ? "" : "CPS " + AutoRightClient.config.minCps + "-" + AutoRightClient.config.maxCps
-               + (AutoRightClient.config.blockMode ? "  •  Block" : ""));
-         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "ninjabridge", "Ninja Bridge", "Auto-sneak bridging helper",
+            () -> AutoRightClient.config == null ? "" : "CPS " + AutoRightClient.config.minCps + "-" + AutoRightClient.config.maxCps,
+            AutoRightClient.config != null && AutoRightClient.config.blockMode ? "Block mode: on" : "Block mode: off",
+            "Fire Charge / pearls: one use per press");
+         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "ninjabridge", "Ninja Bridge", "Auto-sneak bridging",
             () -> NinjaBridgeClient.config != null && NinjaBridgeClient.config.enabled,
             () -> NinjaBridgeClient.config != null ? NinjaBridgeClient.config.toggleKeyCode : -1,
             () -> NinjaBridgeClient.config == null ? "" : (NinjaBridgeClient.config.autoSwitch ? "Auto-switch on" : "Auto-switch off"));
-         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "aimassist", "AimAssist", "Close-range aim smoothing",
+         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "aimassist", "AimAssist", "Smooth target tracking",
             () -> AimAssistClient.config != null && AimAssistClient.config.enabled,
             () -> AimAssistClient.config != null ? AimAssistClient.config.toggleKeyCode : -1,
-            () -> AimAssistClient.config == null ? "" : "Speed " + fmt(AimAssistClient.config.speed) + "  •  FOV " + fmt(AimAssistClient.config.fov));
+            () -> AimAssistClient.config == null ? "" : "Speed " + fmt(AimAssistClient.config.speed),
+            AimAssistClient.config == null ? "" : "FOV " + fmt(AimAssistClient.config.fov));
          i = addCard(i, cols, cardW, cardH, gap, x0, y0, "tracker", "Tracker", "Hidden-enemy HUD + box",
             () -> TrackerClient.config != null && TrackerClient.config.enabled,
             () -> TrackerClient.config != null ? TrackerClient.config.toggleKeyCode : -1,
-            () -> TrackerClient.config == null ? "" : "Range " + fmt(TrackerClient.config.range));
+            () -> TrackerClient.config == null ? "" : "Range " + fmt(TrackerClient.config.range),
+            TrackerClient.config != null && TrackerClient.config.ignoreOwnTeam ? "Ignores own team" : "Tracks all teams");
       }
 
       private int addCard(int i, int cols, int cardW, int cardH, int gap, int x0, int y0,
                           String id, String label, String desc,
-                          Supplier<Boolean> enabled, Supplier<Integer> key, Supplier<String> summary) {
+                          Supplier<Boolean> enabled, Supplier<Integer> key, Supplier<String> summary,
+                          String... extraTip) {
          int col = i % cols;
          int row = i / cols;
          int x = x0 + col * (cardW + gap);
          int y = y0 + row * (cardH + gap);
-         this.cards.add(new Card(x, y, cardW, cardH, id, label, desc, enabled, key, summary));
+         this.cards.add(new Card(x, y, cardW, cardH, id, label, desc, enabled, summary));
+         // Hover tooltip carries the detail that used to crowd the card face.
+         List<String> tip = new ArrayList<>();
+         tip.add(label);
+         tip.add("Toggle key: " + keyName(key.get()).getString());
+         for (String e : extraTip) {
+            if (e != null && !e.isEmpty()) tip.add(e);
+         }
+         tip.add("Click to configure");
+         addHelp(x, y, cardW, cardH, tip.toArray(new String[0]));
          return i + 1;
       }
 
       @Override
       protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         drawHeading(ctx, "Module Dashboard", "Click a card to configure. Everything below is live.");
+         drawHeading(ctx, "Module Dashboard", "Select a module to configure");
          TextRenderer tr = this.textRenderer;
          for (Card card : this.cards) {
             boolean hovered = card.contains(mouseX, mouseY);
             boolean on = Boolean.TRUE.equals(card.enabled().get());
             Theme.panel(ctx, card.x(), card.y(), card.w(), card.h(), hovered ? Theme.CARD_HOVER : Theme.CARD, Theme.BORDER_SOFT);
             ctx.fill(card.x(), card.y(), card.x() + 2, card.y() + card.h(), on ? Theme.ACCENT : Theme.TEXT_MUTED);
-            ctx.drawText(tr, Text.literal(card.label()).formatted(Formatting.BOLD), card.x() + 9, card.y() + 7, Theme.TEXT, false);
-            // status dot
+            // Three lines only, with more breathing room; details live in the hover tooltip.
+            ctx.drawText(tr, Text.literal(card.label()).formatted(Formatting.BOLD), card.x() + 10, card.y() + 9, Theme.TEXT, false);
             int dotX = card.x() + card.w() - 12;
-            ctx.fill(dotX, card.y() + 9, dotX + 5, card.y() + 14, on ? Theme.SUCCESS : Theme.TEXT_MUTED);
-            ctx.drawText(tr, card.desc(), card.x() + 9, card.y() + 19, Theme.TEXT_MUTED, false);
+            ctx.fill(dotX, card.y() + 11, dotX + 5, card.y() + 16, on ? Theme.SUCCESS : Theme.TEXT_MUTED);
+            ctx.drawText(tr, card.desc(), card.x() + 10, card.y() + 24, Theme.TEXT_MUTED, false);
             String sum = card.summary().get();
-            ctx.drawText(tr, sum, card.x() + 9, card.y() + 31, Theme.TEXT_DIM, false);
-            Text keyLine = Text.literal("Key: ").append(keyName(card.key().get()));
-            ctx.drawText(tr, keyLine, card.x() + 9, card.y() + 41, Theme.TEXT_MUTED, false);
+            ctx.drawText(tr, sum, card.x() + 10, card.y() + 37, Theme.TEXT_DIM, false);
          }
       }
 
