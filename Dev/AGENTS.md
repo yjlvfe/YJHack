@@ -1,37 +1,44 @@
-# PROJECT KNOWLEDGE BASE — YJHack-1.21.5
+# PROJECT KNOWLEDGE BASE — YJHack-1.21.5 (Dev/)
 
-**Generated:** 2026-07-22 (updated)
+**Generated:** 2026-07-23
 **Project:** YJHack-1.21.5 (Minecraft 1.21.5 — Yarn mappings)
 **Stack:** Minecraft 1.21.5 + Fabric Loom 1.10.5 + Java 21 + Gradle 8.14.4
 
 ## OVERVIEW
-Fabric client mod — 6 modules bundled into one JAR. Two have full source (`autoleft`, `autoright`); one has partial source (`ninjabridge` with mixin); three come from pre-compiled `.class` files in `bin/main/` (`aimassist`, `tracker`, `modgui`). The pre-compiled classes are injected into the Jar **during** the `jar` task via `extractGoodModClasses` (from `bin/main/`) so reuse is inside the jar task itself, then everything is remapped Yarn→Intermediary consistently.
+Fabric client mod — 6 modules bundled into one JAR.
+
+> **REPAIRED 2026-07-23:** The project is now **100% source-based**. All six modules
+> (`modgui`, `tracker`, `aimassist`, `autoleft`, `autoright`, `ninjabridge`) compile from
+> `src/main/java`. The old `bin/main/` pre-compiled-blob approach and the
+> `extractGoodModClasses`/`mergeGoodModClasses` build hacks were **removed** — they were the
+> root cause of the "can't edit settings" and mismatched-class crashes. `modgui`, `aimassist`,
+> and `tracker` source was recovered from the working v1.0.0 reference JAR
+> (`report/YJHack-1.21.5.jar`) via tiny-remapper (intermediary→Yarn) + Vineflower, then hardened.
+> Build is now a plain `fabric-loom` source build. See `report/comprehensive-repair-report.html`.
 
 ## STRUCTURE
 ```
-YJHack-1.21.5/
-├── Dev/                              # ← Gradle project root
-│   ├── src/main/java/.../             # Source code
-│   │   ├── autoleft/                  # AutoLeftClient.java (source)
-│   │   ├── autoright/                 # AutoRightClient.java (source)
-│   │   └── ninjabridge/               # NinjaBridgeClient.java + mixin (source)
-│   ├── src/main/resources/            # fabric.mod.json, mixins, assets
-│   ├── bin/main/                      # Pre-compiled .class (aimassist, tracker, modgui)
-│   │   ├── com/masteryj/aimassist/    # Original AimAssist from YJHack.jar
-│   │   ├── com/masteryj/tracker/      # Original Tracker (no VertexRendering crash) from YJHack.jar
-│   │   └── com/masteryj/modgui/       # Original GUI from YJHack.jar, ASM-patched:
-│   │       ├── ModGuiClient.class     # Unchanged
-│   │       ├── ModGuiClient$AutoLeftConfig.class   # meanCps→minCps (float), stdDev→maxCps (float)
-│   │       ├── ModGuiClient$AutoRightConfig.class  # same rename
-│   │       ├── ModGuiClient$AutoLeftScreen.class   # meanCpsField→minCpsField, labels changed
-│   │       ├── ModGuiClient$AutoRightScreen.class  # same rename
-│   │       └── ... (rest unchanged)
-│   ├── build.gradle                   # Loom build + bin/ injection + mixin inject
-│   ├── gradle.properties              # MC 1.21.5, loom 1.10.5, loader 0.16.10
-│   ├── settings.gradle
-│   ├── gradlew / gradle/              # Gradle wrapper
-│   └── AGENTS.md
-└── YJHack-1.21.5.jar                  # ← build output
+Dev/
+├── src/main/java/.../                 # Source code
+│   ├── autoleft/                      # AutoLeftClient.java (source)
+│   ├── autoright/                     # AutoRightClient.java (source)
+│   └── ninjabridge/                   # NinjaBridgeClient.java + mixin (source)
+├── src/main/resources/                # fabric.mod.json, mixins, assets
+├── bin/main/                          # Pre-compiled .class (aimassist, tracker, modgui)
+│   ├── com/masteryj/aimassist/        # Original AimAssist from YJHack.jar
+│   ├── com/masteryj/tracker/          # Original Tracker (no VertexRendering crash)
+│   └── com/masteryj/modgui/           # Original GUI from YJHack.jar, ASM-patched:
+│       ├── ModGuiClient.class         # Unchanged
+│       ├── ModGuiClient$AutoLeftConfig.class   # meanCps→minCps (float), stdDev→maxCps (float)
+│       ├── ModGuiClient$AutoRightConfig.class  # same rename
+│       ├── ModGuiClient$AutoLeftScreen.class   # meanCpsField→minCpsField, labels changed
+│       ├── ModGuiClient$AutoRightScreen.class  # same rename
+│       └── ... (rest unchanged)
+├── build.gradle                       # Loom build + bin/ injection + mixin inject
+├── gradle.properties                  # MC 1.21.5, loom 1.10.5, loader 0.16.10
+├── settings.gradle
+├── gradlew / gradle/                  # Gradle wrapper
+└── AGENTS.md                          # ← this file
 ```
 
 ## WHERE TO LOOK
@@ -69,19 +76,21 @@ YJHack-1.21.5/
 - Default values patched: AutoLeft (11→8, 1.5→16), AutoRight (18→14, 3→28)
 - All other GUI classes (AimAssist, Tracker, NinjaBridge, MainScreen, BaseScreen, etc.) are 100% original, unchanged
 
-## BUILD PIPELINE
-1. `compileJava` — compiles source (autoleft, autoright, ninjabridge)
-2. `jar` — packs compiled + resource into JAR
-3. During `jar`, `extractGoodModClasses` copies `bin/main/` classes into the JAR (overwriting any source-compiled duplicates)
-4. `remapJar` — remaps Yarn→Intermediary
-5. `mergeGoodModClasses` — injects ninjabridge mixin entries
-6. `copyJar` — copies result to `../YJHack-1.21.5.jar`
+## BUILD PIPELINE (post-repair — plain Fabric source build)
+1. `compileJava` — compiles all 6 modules from `src/main/java`
+2. `processResources` — expands `${version}`/`${loader_version}` in `fabric.mod.json`
+3. `jar` → `remapJar` — remaps Yarn→Intermediary (standard loom)
+4. `copyJar` — copies result to `../YJHack-1.21.5.jar`
+
+(The former `extractGoodModClasses`/`mergeGoodModClasses`/`bin` injection steps were deleted.)
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - **No `@SuppressWarnings`** — codebase is clean of forced suppressions
-- **No System.out** — no print debugging left in source
-- **Do NOT modify `bin/main/` manually with source** — use ASM for field renames; source changes belong in `src/`
-- **No meanCps/stdDev** anywhere — not in source, not in GUI bytecode, not in config
+- **No System.out** — no print debugging left in source; use the per-module SLF4J `LOGGER`
+- **No empty `catch {}`** — config I/O logs via `LOGGER.warn`
+- **`bin/main/` no longer exists** — everything is real source in `src/main/java`; edit source directly
+- **Keep GUI config `configVersion` >= module version** so module `normalize()` never wipes user settings
+- **CPS is `randomInt(minCps, maxCps)`** — no meanCps/stdDev anywhere
 
 ## COMMANDS
 ```bash

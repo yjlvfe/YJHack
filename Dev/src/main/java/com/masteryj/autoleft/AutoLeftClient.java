@@ -18,6 +18,9 @@ import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.hit.HitResult;
 import org.lwjgl.glfw.GLFW;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,6 +29,7 @@ import java.util.Random;
 
 public final class AutoLeftClient implements ClientModInitializer {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoLeft");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
     private static final int CURRENT_CONFIG_VERSION = 4;
@@ -223,6 +227,10 @@ public final class AutoLeftClient implements ClientModInitializer {
             if (configVersion < CURRENT_CONFIG_VERSION) {
                 configVersion = CURRENT_CONFIG_VERSION;
             }
+            // Clamp CPS to sane bounds so a hand-edited file cannot produce
+            // absurd click rates. Ordering is tolerated by scheduleNextDelay().
+            minCps = Math.max(1, Math.min(1000, minCps));
+            maxCps = Math.max(1, Math.min(1000, maxCps));
             toggleKeyCode = normalizeToggleKeyCode(toggleKeyCode);
         }
     }
@@ -239,7 +247,8 @@ public final class AutoLeftClient implements ClientModInitializer {
             if (lastKnownConfigWriteTime != null && wt.equals(lastKnownConfigWriteTime)) return;
             config = loadConfig();
             applyRuntimeConfig(config);
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            LOGGER.error("Failed to reload config: {}", e.getMessage());
         }
     }
 
@@ -255,7 +264,8 @@ public final class AutoLeftClient implements ClientModInitializer {
                     return cfg;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            LOGGER.error("Failed to load config: {}", e.getMessage());
         }
         Config cfg = new Config();
         cfg.normalize();
@@ -263,13 +273,24 @@ public final class AutoLeftClient implements ClientModInitializer {
         return cfg;
     }
 
-    private void saveConfig(Config cfg) {
+    public void saveConfig(Config cfg) {
         cfg.normalize();
         applyRuntimeConfig(cfg);
         try {
             Files.createDirectories(CONFIG_PATH.getParent());
             Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
             lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
+        } catch (IOException e) {
+            LOGGER.error("Failed to save config: {}", e.getMessage());
+        }
+    }
+
+    public static void saveConfigStatic(Config cfg) {
+        cfg.normalize();
+        applyRuntimeConfig(cfg);
+        try {
+            Files.createDirectories(CONFIG_PATH.getParent());
+            Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
         } catch (IOException ignored) {
         }
     }

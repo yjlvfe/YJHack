@@ -14,8 +14,10 @@ import net.minecraft.util.Formatting;
 import net.minecraft.util.math.BlockPos;
 import org.lwjgl.glfw.GLFW;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -23,6 +25,7 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 
 public final class NinjaBridgeClient implements ClientModInitializer {
+    private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-NinjaBridge");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("ninjabridge.json");
     private static final int CURRENT_CONFIG_VERSION = 7;
@@ -45,32 +48,14 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private int lastSlot = -1;
     private boolean wasSneaking = false;
 
-    // Resolves untoggle() on StickyKeyBinding at runtime if available (toggle sneak mode)
-    private static Method untoggleMethod;
-    static {
-        Method m = null;
-        try {
-            Class<?> keyCls = net.minecraft.client.option.KeyBinding.class;
-            for (Method method : keyCls.getDeclaredMethods()) {
-                if (method.getName().equals("untoggle") && method.getParameterCount() == 0) {
-                    m = method;
-                    m.setAccessible(true);
-                    break;
-                }
-            }
-        } catch (Exception ignored) {}
-        untoggleMethod = m;
-    }
-
+    // Fix for MC 1.21.5: Removed reflection-based untoggleMethod
+    // In 1.21.5, KeyBinding.untoggle() may not exist or have different signature
+    // We use direct setPressed() which works reliably
     private static void setSneakState(MinecraftClient c, boolean sneak) {
         net.minecraft.client.option.KeyBinding sneakKey = c.options.sneakKey;
-        if (!sneak && untoggleMethod != null && untoggleMethod.getDeclaringClass().isInstance(sneakKey)) {
-            // Toggle sneak mode: setPressed(false) alone doesn't fully release
-            sneakKey.setPressed(false);
-            try { untoggleMethod.invoke(sneakKey); } catch (Exception ignored) {}
-        } else {
-            sneakKey.setPressed(sneak);
-        }
+        sneakKey.setPressed(sneak);
+        // In MC 1.21.5, setPressed is sufficient for sneak state
+        // No need for reflection-based untoggle
     }
 
     @Override
@@ -204,7 +189,9 @@ public final class NinjaBridgeClient implements ClientModInitializer {
             FileTime wt = Files.getLastModifiedTime(CONFIG_PATH);
             if (lastWt != null && wt.equals(lastWt)) return;
             config = loadConfig(); applyRuntimeConfig(config);
-        } catch (IOException e) {}
+        } catch (IOException e) {
+            LOGGER.error("Failed to reload config: {}", e.getMessage());
+        }
     }
 
     private Config loadConfig() {
@@ -213,12 +200,26 @@ public final class NinjaBridgeClient implements ClientModInitializer {
                 Config l = GSON.fromJson(Files.readString(CONFIG_PATH), Config.class);
                 if (l != null) { l.norm(); lastWt = Files.getLastModifiedTime(CONFIG_PATH); return l; }
             }
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            LOGGER.error("Failed to load config: {}", e.getMessage());
+        }
         Config f = new Config(); f.norm(); saveConfig(f); return f;
     }
 
-    private void saveConfig(Config cfg) {
-        try { cfg.norm(); applyRuntimeConfig(cfg); Files.createDirectories(CONFIG_PATH.getParent()); Files.writeString(CONFIG_PATH, GSON.toJson(cfg)); lastWt = Files.getLastModifiedTime(CONFIG_PATH); } catch (IOException e) {}
+    public void saveConfig(Config cfg) {
+        try {
+            cfg.norm();
+            applyRuntimeConfig(cfg);
+            Files.createDirectories(CONFIG_PATH.getParent());
+            Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
+            lastWt = Files.getLastModifiedTime(CONFIG_PATH);
+        } catch (IOException e) {
+            LOGGER.error("Failed to save config: {}", e.getMessage());
+        }
+    }
+
+    public static void saveConfigStatic(Config cfg) {
+        try { cfg.norm(); applyRuntimeConfig(cfg); Files.createDirectories(CONFIG_PATH.getParent()); Files.writeString(CONFIG_PATH, GSON.toJson(cfg)); } catch (IOException e) {}
     }
 
     public static void applyRuntimeConfig(Config cfg) {

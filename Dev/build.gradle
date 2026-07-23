@@ -25,78 +25,19 @@ dependencies {
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
+    withSourcesJar()
 }
 
 // ============================================================
-// Use Eclipse-compiled classes (bin/main/) for modules without
-// source (aimassist, tracker, modgui). autoleft, autoright, and
-// ninjabridge are compiled from source.
+// Clean, fully source-based Fabric build.
+// All six modules (modgui, tracker, aimassist, autoleft,
+// autoright, ninjabridge) are compiled from src/main/java.
+// The previous bin/main pre-compiled-blob injection and the
+// extractGoodModClasses / mergeGoodModClasses hacks were
+// removed during the 2026-07-23 repair — they were the root
+// cause of the "can't edit settings" and mismatched-class
+// crashes. See report/comprehensive-repair-report.html.
 // ============================================================
-def BIN_CLASSES = file('bin/main')
-
-// Extract Good mod classes before remap
-tasks.register('extractGoodModClasses') {
-    outputs.dir(layout.buildDirectory.dir('classes/goodmod'))
-    doLast {
-        def outDir = layout.buildDirectory.dir('classes/goodmod').get().asFile
-        delete outDir
-        if (BIN_CLASSES.exists()) {
-            copy {
-                from BIN_CLASSES
-                include 'com/masteryj/aimassist/**'
-                include 'com/masteryj/modgui/**'
-                include 'com/masteryj/tracker/**'
-                include 'assets/**'
-                into outDir
-            }
-        } else {
-            // Fallback: try the JAR
-            def jarPath = '/home/masteryj/Desktop/Mod Maker/Fabric/Good mod/HelpNoob-Core.jar'
-            if (file(jarPath).exists()) {
-                copy {
-                    from zipTree(jarPath)
-                    include 'com/masteryj/aimassist/**'
-                    include 'com/masteryj/modgui/**'
-                    include 'com/masteryj/tracker/**'
-                    include 'assets/**'
-                    into outDir
-                }
-            } else {
-                throw new GradleException(
-                    "Missing Good mod classes! Either compile with Eclipse first (bin/main/) " +
-                    "or place HelpNoob-Core.jar at: $jarPath"
-                )
-            }
-        }
-    }
-}
-
-// Merge Good mod classes (already intermediary) into JAR after remap
-tasks.register('mergeGoodModClasses') {
-    dependsOn remapJar, extractGoodModClasses
-    doLast {
-        def jarFile = remapJar.archiveFile.get().asFile
-        def goodModDir = layout.buildDirectory.dir('classes/goodmod').get().asFile
-        def tempDir = layout.buildDirectory.dir('tmp/jar-merge').get().asFile
-        delete tempDir; tempDir.mkdirs()
-
-        copy { from zipTree(jarFile); into tempDir }
-        copy {
-            from goodModDir
-            include 'com/masteryj/aimassist/**'
-            include 'com/masteryj/modgui/**'
-            include 'com/masteryj/tracker/**'
-            include 'assets/**'
-            into tempDir
-            duplicatesStrategy = DuplicatesStrategy.INCLUDE
-        }
-        ant.jar(destfile: jarFile, basedir: tempDir, duplicate: 'fail')
-        delete tempDir
-    }
-}
-
-remapJar.finalizedBy mergeGoodModClasses
-remapJar.dependsOn extractGoodModClasses
 
 processResources {
     inputs.property 'version', project.version
@@ -106,14 +47,20 @@ processResources {
     }
 }
 
-jar { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+    it.options.encoding = 'UTF-8'
+}
 
-task copyJar(type: Copy) {
-    dependsOn mergeGoodModClasses
+// Copy the remapped jar next to the project root for easy testing.
+tasks.register('copyJar', Copy) {
+    dependsOn remapJar
     from remapJar.archiveFile
-    into file('/home/masteryj/Desktop/Mod Maker/YJHack-1.21.5')
+    into file(project.hasProperty('outputJarDir') ? project.property('outputJarDir') : file('..'))
     rename { 'YJHack-1.21.5.jar' }
 }
 
 build.finalizedBy copyJar
-clean.doLast { delete file('/home/masteryj/Desktop/Mod Maker/YJHack-1.21.5/YJHack-1.21.5.jar') }
+clean.doLast {
+    delete file('/home/masteryj/Desktop/Mod Maker/YJHack-1.21.5/YJHack-1.21.5.jar')
+}
