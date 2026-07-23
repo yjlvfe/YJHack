@@ -1,6 +1,5 @@
 plugins {
     id 'fabric-loom' version "${loom_version}"
-    id 'maven-publish'
 }
 
 version = project.mod_version
@@ -36,22 +35,19 @@ java {
     withSourcesJar()
 }
 
-// ============================================================
-// Clean, fully source-based Fabric build.
-// All six modules (modgui, tracker, aimassist, autoleft,
-// autoright, ninjabridge) are compiled from src/main/java.
-// The previous bin/main pre-compiled-blob injection and the
-// extractGoodModClasses / mergeGoodModClasses hacks were
-// removed during the 2026-07-23 repair — they were the root
-// cause of the "can't edit settings" and mismatched-class
-// crashes. See report/comprehensive-repair-report.html.
-// ============================================================
+// Fully source-based Fabric build: all six client modules compile from
+// src/main/java. There is no pre-compiled bin/main blob injection — do not
+// reintroduce one (it was the cause of the earlier mismatched-class crashes).
 
 processResources {
-    inputs.property 'version', project.version
-    inputs.property 'loader_version', project.loader_version
+    // Capture at configuration time so the filesMatching closure (which runs at
+    // execution time) never dereferences Task.project (Gradle 10 / config-cache).
+    def modVersion = project.version
+    def loaderVersion = project.loader_version
+    inputs.property 'version', modVersion
+    inputs.property 'loader_version', loaderVersion
     filesMatching('fabric.mod.json') {
-        expand version: project.version, loader_version: project.loader_version
+        expand version: modVersion, loader_version: loaderVersion
     }
 }
 
@@ -69,6 +65,11 @@ tasks.register('copyJar', Copy) {
 }
 
 build.finalizedBy copyJar
+
+// Resolve the path at configuration time and delete via java.io.File at execution,
+// so nothing calls Task.project during task execution (configuration-cache friendly).
+def rootConvenienceJar = file('../YJHack-1.21.5.jar')
 clean.doLast {
-    delete file('/home/masteryj/Desktop/Mod Maker/YJHack-1.21.5/YJHack-1.21.5.jar')
+    // Remove the convenience copy copyJar drops next to the project root.
+    rootConvenienceJar.delete()
 }

@@ -53,6 +53,10 @@ public final class TrackerClient implements ClientModInitializer {
       config = this.loadConfig();
       applyRuntimeConfig(config);
       ClientTickEvents.END_CLIENT_TICK.register(this::tickTracker);
+      // NOTE: HudRenderCallback is deprecated in Fabric API 0.119, but intentionally
+      // retained: migrating to the newer HUD layer API changes draw ordering/layering
+      // of the hidden-enemy alert, and the Tracker HUD behaviour must stay identical.
+      // The javac deprecation note is left visible (not suppressed) on purpose.
       HudRenderCallback.EVENT.register(this::renderHiddenEnemyHud);
       WorldRenderEvents.BEFORE_DEBUG_RENDER.register(this::renderEnemyHitboxes);
    }
