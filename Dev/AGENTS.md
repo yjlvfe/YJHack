@@ -23,9 +23,12 @@ Dev/
 │   ├── autoleft/AutoLeftClient.java        # left auto-click (hold physical LMB)
 │   ├── autoright/AutoRightClient.java      # right auto-click + block burst + single-press items
 │   ├── autoright/RightClickPolicy.java     # NEW: item classification (single-press vs block vs pass-through)
-│   ├── modgui/ModGuiClient.java            # REDESIGNED GUI (no vanilla blur, custom widgets, typed config)
+│   ├── modgui/ModGuiClient.java            # REDESIGNED GUI: entrypoint + screen graph (no vanilla blur, typed config)
+│   ├── modgui/theme/YjTheme.java           # GUI kit: colours, metrics, panel/pill, fmt/keyName/encodeMouse
+│   ├── modgui/component/                    # custom widgets: ToggleSwitch, ThemeSlider, KeybindButton
 │   ├── ninjabridge/NinjaBridgeClient.java  # auto-sneak bridge helper (GLFW polling)
 │   └── tracker/TrackerClient.java          # hidden-enemy HUD + red box (world render)
+├── src/test/java/com/masteryj/             # JUnit (fabric-loader-junit): RightClickPolicy, rising-edge, config
 ├── src/main/resources/                     # fabric.mod.json, assets/modgui/lang
 ├── build.gradle                            # plain fabric-loom build + copyJar → ../YJHack-1.21.5.jar
 ├── gradle.properties                       # MC 1.21.5, loom 1.10.5, loader 0.16.10
@@ -39,13 +42,14 @@ No `bin/`. No mixins JSON (NinjaBridge is pure `ClientModInitializer` + GLFW pol
 | Auto-left logic | `autoleft/AutoLeftClient.java` | Hold physical LMB → auto-click. CPS: `randomInt(minCps,maxCps)` |
 | Auto-right logic | `autoright/AutoRightClient.java` | Rising-edge single-press for discrete items; block burst only in Block Mode |
 | Right-click classification | `autoright/RightClickPolicy.java` | `classify(stack,user)` → SINGLE_PRESS / BLOCK / PASS_THROUGH |
-| GUI | `modgui/ModGuiClient.java` | `YjScreen` base (no blur), `ToggleSwitch`/`ThemeSlider`/`KeybindButton`, typed config bridge |
+| GUI | `modgui/ModGuiClient.java` (+ `modgui/theme/`, `modgui/component/`) | `YjScreen` base + screens in ModGuiClient; kit in `theme/YjTheme`; widgets in `component/`; typed config bridge |
 | Aim assist | `aimassist/AimAssistClient.java` | ≤3.5-block apply, FOV gate, raycast visibility, S-curve smoothing |
-| Tracker HUD + box | `tracker/TrackerClient.java` | HudRenderCallback + WorldRenderEvents.BEFORE_DEBUG_RENDER |
+| Tracker HUD + box | `tracker/TrackerClient.java` | HudRenderCallback (deprecated, kept intentionally) + WorldRenderEvents.BEFORE_DEBUG_RENDER |
+| Tests | `src/test/java/com/masteryj/` | `./gradlew test` — 19 JUnit via fabric-loader-junit (RightClickPolicy, rising-edge, config normalize) |
 | Entrypoints | `src/main/resources/fabric.mod.json` | 6 client entrypoints |
 
 ## CONVENTIONS
-- **Monolithic files**: one `XxxClient.java` per module with a public inner `Config` class.
+- **One `XxxClient.java` per module** with a public inner `Config` class. The GUI is split into `modgui/ModGuiClient` (entrypoint + screen graph), `modgui/theme/YjTheme` (visual kit) and `modgui/component/*` (custom widgets).
 - **Config format**: Gson JSON → `<mod-id>.json` in the config dir; module auto-reloads only when the file's mtime changes (never on a timer alone).
 - **Keybinding**: direct GLFW polling (`GLFW.glfwGetKey`/`glfwGetMouseButton`) with configurable codes; codes ≥ 1000 encode mouse buttons (`1000 + button`).
 - **CPS**: `minCps + random.nextInt(maxCps-minCps+1)`, delay = `ceil(1000/cps)` ms. No Gaussian, no fluctuation.
@@ -61,7 +65,7 @@ No `bin/`. No mixins JSON (NinjaBridge is pure `ClientModInitializer` + GLFW pol
 
 ## KEY DETAILS — GUI (ModGuiClient, redesigned v2)
 - **No vanilla blur/darkening**: `YjScreen.renderBackground()` is overridden and never calls `super.renderBackground()` (which runs `applyBlur()` + `renderDarkening()`). Only a light full-screen tint (~0x22 alpha) is drawn; panels are translucent glass. World and nearby players stay clearly visible. This was the cause of both the "too dark" look and the render-thread stall with Iris/Sodium.
-- **Custom widgets**: `ToggleSwitch`, `ThemeSlider` (built on `SliderWidget`, custom-drawn) with a synced numeric entry box, `KeybindButton`.
+- **Custom widgets** (in `modgui/component/`; kit in `modgui/theme/YjTheme`): `ToggleSwitch`, `ThemeSlider` (built on `SliderWidget`, custom-drawn) with a synced numeric entry box, `KeybindButton`.
 - **No per-frame / per-keystroke saving**: edits apply live in memory; the file is written on a 350 ms debounce, on slider release, on Save, and on close. Sliders never write during a drag.
 - Responsive centred window; sidebar nav; header with status; footer Save/Reset/Back; "Settings saved" toast; hover tooltips (no "!" boxes). `shouldPause()` returns false so the world keeps moving behind the panel.
 

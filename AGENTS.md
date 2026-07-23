@@ -33,11 +33,14 @@ YJHack-1.21.5/
   vanilla blur** (`YjScreen.renderBackground` overridden) — was the cause of the dark screen and
   render-thread stall. AutoRight now routes discrete items (Fire Charge, pearls, bow…) through
   `autoright/RightClickPolicy` as **single-press** (one use per press, no CPS). Config is applied
-  through a typed bridge (no reflection). See `report/comprehensive-repair-report-v2.html`.
+  through a typed bridge (no reflection). See `report/final-cleanup-report.html` (repair-v2 history
+  archived under `report/_archive/`).
+- **CLEANED 2026-07-23:** dead code removed; GUI theme/widgets split into `modgui/theme/` +
+  `modgui/component/`; real JUnit tests added (`./gradlew test`, 19 pass); Gradle warnings resolved.
 - **Git**: tracked; `.gitignore` present (ignores build/, run/, graphify-out/, generated jars/html)
 - **6 entrypoints** (load order): ModGui → Tracker → AimAssist → AutoLeft → AutoRight → NinjaBridge
 - **CPS:** `randomInt(minCps, maxCps)` — no Gaussian, no jitter, no fluctuation
-- **GUI:** real source (`modgui/ModGuiClient.java`), recovered from the working v1.0.0 JAR
+- **GUI:** real source (`modgui/`), recovered from the working v1.0.0 JAR
 - **See `Dev/AGENTS.md`** for full build pipeline, conventions, anti-patterns, commands
 
 ## COMMANDS
