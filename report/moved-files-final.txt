@@ -1,0 +1,32 @@
+================================================================
+ MOVED / ARCHIVED FILES — final cleanup (all via `git mv`, 100% rename)
+================================================================
+
+Into report/_archive/ (prior-task reports, kept for review, out of the top level):
+  Dev/AUDIT_REPORT.md              -> report/_archive/AUDIT_REPORT.md
+  Dev/.debug-journal.md            -> report/_archive/debug-journal.md
+  report/final-build-output.txt    -> report/_archive/final-build-output.txt
+  report/final-modified-files.txt  -> report/_archive/final-modified-files.txt
+  report/freeze-thread-dump.txt    -> report/_archive/freeze-thread-dump.txt
+  report/gui-before-after.md       -> report/_archive/gui-before-after.md
+  report/jar-verification.txt      -> report/_archive/jar-verification.txt
+  report/lunar-test-results.md     -> report/_archive/lunar-test-results.md
+  report/right-click-policy.md     -> report/_archive/right-click-policy.md
+  report/runtime-diagnosis.md      -> report/_archive/runtime-diagnosis.md
+
+Consolidated the old stale archive into the single archive:
+  report/_archive-stale/README.md          -> report/_archive/stale-v1/README.md
+  report/_archive-stale/report.html.stale  -> report/_archive/stale-v1/report.html.stale
+
+On-disk move (untracked HTML, kept for history):
+  report/comprehensive-repair-report-v2.html -> report/_archive/comprehensive-repair-report-v2.html
+
+Why:
+- Dev/ should hold only build + source; the two Dev docs were prior-task reports
+  (AUDIT_REPORT predated the 6-source-module state; debug-journal referenced the
+  removed HelpNoob-Core structure).
+- The user asked for a SINGLE report/_archive/ and no more than one official report.
+  All prior-task artifacts now live under report/_archive/; the one official final
+  report is report/final-cleanup-report.html.
+
+All moves are pure renames (git rename score 100%), so full history is preserved.

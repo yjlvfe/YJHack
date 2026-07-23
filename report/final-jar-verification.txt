@@ -1,0 +1,64 @@
+================================================================
+ FINAL JAR VERIFICATION — YJHack-1.21.5 (post-cleanup)
+================================================================
+Date: 2026-07-23
+
+----------------------------------------------------------------
+JARS ON DISK (both gitignored; distinct and intentional)
+----------------------------------------------------------------
+1) Frozen baseline reference (DO NOT MODIFY) — UNCHANGED by cleanup
+   report/YJHack-1.21.5.jar
+   size    : 93,554 bytes
+   SHA-256 : 706daa61acd3f8fc774e493e5935e06854230a11ba674181b15eda95d7a5178b
+
+2) Cleaned build output (the testable jar)
+   ./YJHack-1.21.5.jar   (produced by `gradlew build` -> copyJar)
+   size    : 93,313 bytes
+   SHA-256 : 5398ab19322cbc73f1802fef2cf88a7bc678c7267fdcf21381abd490d1ef03eb
+
+External backup of the baseline (outside the project):
+   ~/Desktop/YJHack-cleanup-backup-20260723-200317/YJHack-1.21.5-baseline-706daa61.jar
+
+No duplicate jars are committed to git (`git ls-files '*.jar'` = empty).
+
+----------------------------------------------------------------
+STRUCTURAL DIFF: cleaned vs frozen baseline
+----------------------------------------------------------------
+Compiled classes    : 32  vs  32          IDENTICAL COUNT
+Duplicate classes   : none
+Client entrypoints  : 6   vs  6           IDENTICAL (byte-for-byte set)
+  com.masteryj.modgui.ModGuiClient
+  com.masteryj.tracker.TrackerClient
+  com.masteryj.aimassist.AimAssistClient
+  com.masteryj.autoleft.AutoLeftClient
+  com.masteryj.autoright.AutoRightClient
+  com.masteryj.ninjabridge.NinjaBridgeClient
+Resources           : IDENTICAL
+  META-INF/MANIFEST.MF
+  assets/modgui/lang/en_us.json
+  fabric.mod.json  (version expands to 1.2.0, fabricloader >=0.16.10)
+
+The ONLY class-list difference is the intentional GUI package reorganization
+(1:1 relocation, no logic change, net class count unchanged):
+  baseline  ModGuiClient$Theme          -> cleaned  modgui/theme/YjTheme
+  baseline  ModGuiClient$ToggleSwitch   -> cleaned  modgui/component/ToggleSwitch
+  baseline  ModGuiClient$ThemeSlider    -> cleaned  modgui/component/ThemeSlider
+  baseline  ModGuiClient$KeybindButton  -> cleaned  modgui/component/KeybindButton
+Every other class (all six module clients, RightClickPolicy + $Kind, all screen
+classes, all $Config classes) keeps its exact name and package.
+
+RightClickPolicy in jar : YES (RightClickPolicy.class + RightClickPolicy$Kind.class)
+All six modules in jar   : YES
+Dev/bin present          : NO
+.class files under src   : NONE
+Injected net/minecraft   : NONE (all classes under com/masteryj/)
+
+----------------------------------------------------------------
+CONCLUSION
+----------------------------------------------------------------
+The cleaned jar is structurally equivalent to the Lunar-verified baseline:
+identical entrypoints, identical resources, identical module/policy/screen/config
+class set — only the theme + widget classes were moved into dedicated packages.
+The hash differs (expected: dead code removed + classes relocated); the runtime
+contract is preserved. Final in-game confirmation is the Lunar checklist in
+report/regression-test-results.md.
