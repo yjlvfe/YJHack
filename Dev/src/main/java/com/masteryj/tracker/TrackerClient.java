@@ -36,10 +36,6 @@ public final class TrackerClient implements ClientModInitializer {
    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("tracker.json");
    private static final int CURRENT_CONFIG_VERSION = 6;
-   private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
-   private static final double WALL_HITBOX_EXPAND = 0.03;
-   private static final int HITBOX_BUFFER_SIZE = 16384;
-   private static final int MOUSE_KEY_OFFSET = 1000;
    private final VertexConsumerProvider.Immediate wallHitboxVertexConsumers = VertexConsumerProvider.immediate(new BufferAllocator(16384));
    public static TrackerClient.Config config;
    public static boolean enabled = true;
@@ -52,9 +48,6 @@ public final class TrackerClient implements ClientModInitializer {
    private FileTime lastKnownConfigWriteTime;
    private Text hiddenEnemyHudText;
    private boolean toggleKeyWasDown = false;
-
-   public TrackerClient() {
-   }
 
    public void onInitializeClient() {
       config = this.loadConfig();
@@ -363,9 +356,6 @@ public final class TrackerClient implements ClientModInitializer {
       public double range = 96.0;
       public int hudOffsetX = 0;
       public int hudY = 8;
-
-      public Config() {
-      }
 
       public void normalize() {
          if (this.configVersion < CURRENT_CONFIG_VERSION) {

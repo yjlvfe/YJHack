@@ -48,14 +48,9 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private int lastSlot = -1;
     private boolean wasSneaking = false;
 
-    // Fix for MC 1.21.5: Removed reflection-based untoggleMethod
-    // In 1.21.5, KeyBinding.untoggle() may not exist or have different signature
-    // We use direct setPressed() which works reliably
+    /** Drive the vanilla sneak key directly; setPressed is sufficient on 1.21.5. */
     private static void setSneakState(MinecraftClient c, boolean sneak) {
-        net.minecraft.client.option.KeyBinding sneakKey = c.options.sneakKey;
-        sneakKey.setPressed(sneak);
-        // In MC 1.21.5, setPressed is sufficient for sneak state
-        // No need for reflection-based untoggle
+        c.options.sneakKey.setPressed(sneak);
     }
 
     @Override

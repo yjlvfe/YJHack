@@ -90,7 +90,6 @@ public final class ModGuiClient implements ClientModInitializer {
       static final int PANEL         = 0xB00E1620;   // ~69% main panel
       static final int SIDEBAR       = 0xC00B121B;   // slightly darker, still translucent
       static final int HEADER        = 0xCC0C141E;
-      static final int FOOTER        = 0xC00B121B;
       static final int CARD          = 0x9C121C28;
       static final int CARD_HOVER    = 0xBE1A2836;
       static final int CTRL          = 0x8C13202E;
@@ -101,7 +100,6 @@ public final class ModGuiClient implements ClientModInitializer {
       static final int DIVIDER       = 0x22FFFFFF;
 
       static final int ACCENT        = 0xFF35E0C8;   // teal
-      static final int ACCENT_DIM    = 0xFF1E9E8E;
 
       static final int TEXT          = 0xFFF3F6FA;
       static final int TEXT_DIM      = 0xFFA6B6C8;
@@ -109,7 +107,6 @@ public final class ModGuiClient implements ClientModInitializer {
 
       static final int SUCCESS       = 0xFF4BD16A;
       static final int WARNING       = 0xFFF5C147;
-      static final int ERROR         = 0xFFF06A5A;
 
       static final int TRACK_OFF     = 0xFF33404E;
       static final int KNOB          = 0xFFF3F6FA;
@@ -141,11 +138,6 @@ public final class ModGuiClient implements ClientModInitializer {
    // =====================================================================
    //  SHARED HELPERS
    // =====================================================================
-   private static int normalizeKey(int keyCode) {
-      if (keyCode >= MOUSE_KEY_OFFSET) return keyCode;
-      return keyCode <= 0 ? -1 : keyCode;
-   }
-
    private static int encodeMouse(int button) {
       return MOUSE_KEY_OFFSET + Math.max(0, button);
    }

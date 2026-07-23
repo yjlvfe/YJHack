@@ -36,7 +36,6 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
     private static final int MAX_CATCHUP_PULSES_PER_TICK = 50;
     private static final InputUtil.Key LEFT_MOUSE = InputUtil.Type.MOUSE.createFromCode(0);
-    private static final int MOUSE_KEY_OFFSET = 1000;
 
     private final Random random = new Random();
 

@@ -33,9 +33,6 @@ public final class AimAssistClient implements ClientModInitializer {
    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
    private static final int CURRENT_CONFIG_VERSION = 6;
-   private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
-   private static final long BLOCK_BREAK_FOCUS_MS = 500L;
-   private static final int MOUSE_KEY_OFFSET = 1000;
    private final Random random = new Random();
    private final Map<Integer, Vec3d> lastVisiblePointCache = new HashMap<>();
    public static AimAssistClient.Config config;
@@ -55,9 +52,6 @@ public final class AimAssistClient implements ClientModInitializer {
    private float offsetVelocityX = 0.0F;
    private float offsetVelocityY = 0.0F;
    private long lastOffsetUpdateMs = 0L;
-
-   public AimAssistClient() {
-   }
 
    public void onInitializeClient() {
       config = this.loadConfig();
@@ -432,9 +426,6 @@ public final class AimAssistClient implements ClientModInitializer {
       public float speed = 0.24F;
       public float smoothness = 0.35F;
       public float fov = 70.0F;
-
-      public Config() {
-      }
 
       public void normalize() {
          if (this.configVersion < CURRENT_CONFIG_VERSION) {

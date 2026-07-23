@@ -34,7 +34,6 @@ public final class AutoRightClient implements ClientModInitializer {
     private static final long QUICK_TAP_THRESHOLD_MS = 10L;
     private static final int MAX_CATCHUP_CLICKS_PER_TICK = 50;
     private static final InputUtil.Key RIGHT_MOUSE = InputUtil.Type.MOUSE.createFromCode(1);
-    private static final int MOUSE_KEY_OFFSET = 1000;
 
     private final Random random = new Random();
 
