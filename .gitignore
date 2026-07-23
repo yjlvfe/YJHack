@@ -5,6 +5,7 @@ build/
 
 # IDE
 .idea/
+.vscode/
 *.iml
 .classpath
 .project
@@ -22,8 +23,8 @@ run/
 graphify-out/
 .graphify_*
 
-# Reports (generated HTML)
-report/*.html
+# Reports (generated HTML — kept on disk, not committed; incl. archived copies)
+report/**/*.html
 
 # JARs (generated outputs)
 *.jar
