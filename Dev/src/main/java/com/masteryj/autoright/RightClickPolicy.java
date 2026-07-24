@@ -110,18 +110,4 @@ public final class RightClickPolicy {
         }
         return SINGLE_PRESS_IDS.contains(path) || path.equals("bucket") || path.endsWith("_bucket");
     }
-
-    /**
-     * True when AutoRight is allowed to CPS-repeat the held item.
-     * Only real building blocks, and only when Block Mode is on, ever repeat.
-     */
-    public static boolean shouldAutoRepeat(ItemStack stack, boolean blockMode, LivingEntity user) {
-        if (!blockMode || stack == null || stack.isEmpty()) {
-            return false;
-        }
-        if (isSinglePressItem(stack, user)) {
-            return false;
-        }
-        return stack.getItem() instanceof BlockItem;
-    }
 }

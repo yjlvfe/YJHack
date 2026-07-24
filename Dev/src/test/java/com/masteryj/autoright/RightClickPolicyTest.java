@@ -68,11 +68,4 @@ class RightClickPolicyTest {
         // so this exercises the real method with no Minecraft runtime needed.
         assertEquals(RightClickPolicy.Kind.PASS_THROUGH, RightClickPolicy.classify(null, null));
     }
-
-    @Test
-    void shouldAutoRepeatIsFalseWithoutABlockInBlockMode() {
-        // No stack -> never auto-repeat, regardless of Block Mode.
-        assertFalse(RightClickPolicy.shouldAutoRepeat(null, true, null));
-        assertFalse(RightClickPolicy.shouldAutoRepeat(null, false, null));
-    }
 }

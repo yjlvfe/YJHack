@@ -40,8 +40,4 @@ public final class ClickScheduler {
     public void clear() {
         nextAtMs = 0L;
     }
-
-    public long nextAtMs() {
-        return nextAtMs;
-    }
 }
