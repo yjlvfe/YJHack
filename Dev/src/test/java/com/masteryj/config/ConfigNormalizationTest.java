@@ -27,7 +27,7 @@ class ConfigNormalizationTest {
         c.minCps = 9999;
         c.maxCps = -5;
         c.normalize();
-        assertEquals(1000, c.minCps, "min CPS clamps to 1000");
+        assertEquals(40, c.minCps, "absurd CPS clamps down to the GUI ceiling (40)");
         assertEquals(1, c.maxCps, "non-positive CPS clamps up to 1");
     }
 
@@ -38,7 +38,7 @@ class ConfigNormalizationTest {
         c.maxCps = 500_000;
         c.normalize();
         assertEquals(1, c.minCps);
-        assertEquals(1000, c.maxCps);
+        assertEquals(40, c.maxCps, "absurd CPS clamps down to the GUI ceiling (40)");
     }
 
     @Test
@@ -47,8 +47,21 @@ class ConfigNormalizationTest {
         c.configVersion = 1; // simulate an old file
         c.normalize();
         assertEquals(4, c.configVersion, "config version is upgraded, not reset");
-        assertTrue(c.minCps >= 1 && c.minCps <= 1000);
-        assertTrue(c.maxCps >= 1 && c.maxCps <= 1000);
+        assertTrue(c.minCps >= 1 && c.minCps <= 40);
+        assertTrue(c.maxCps >= 1 && c.maxCps <= 40);
+    }
+
+    @Test
+    void defaultCpsValuesSurviveNormalize() {
+        // The shipped defaults must sit inside the ceiling untouched (no behaviour change).
+        AutoLeftClient.Config left = new AutoLeftClient.Config();
+        left.normalize();
+        assertEquals(8, left.minCps);
+        assertEquals(16, left.maxCps);
+        AutoRightClient.Config right = new AutoRightClient.Config();
+        right.normalize();
+        assertEquals(14, right.minCps);
+        assertEquals(28, right.maxCps);
     }
 
     // ---- AimAssist float sanitisation ----

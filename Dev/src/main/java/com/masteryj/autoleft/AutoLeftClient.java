@@ -33,6 +33,8 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
     private static final int CURRENT_CONFIG_VERSION = 4;
+    /** Hard CPS ceiling for hand-edited configs — matches the GUI slider maximum. */
+    private static final int MAX_SAFE_CPS = 40;
     private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
     private static final int MAX_CATCHUP_PULSES_PER_TICK = 50;
     private static final InputUtil.Key LEFT_MOUSE = InputUtil.Type.MOUSE.createFromCode(0);
@@ -226,10 +228,11 @@ public final class AutoLeftClient implements ClientModInitializer {
             if (configVersion < CURRENT_CONFIG_VERSION) {
                 configVersion = CURRENT_CONFIG_VERSION;
             }
-            // Clamp CPS to sane bounds so a hand-edited file cannot produce
-            // absurd click rates. Ordering is tolerated by scheduleNextDelay().
-            minCps = Math.max(1, Math.min(1000, minCps));
-            maxCps = Math.max(1, Math.min(1000, maxCps));
+            // Clamp CPS to the same ceiling the GUI slider enforces (MAX_SAFE_CPS)
+            // so a hand-edited file cannot produce absurd click rates / packet spam.
+            // Ordering (min>max) is tolerated by scheduleNextDelay().
+            minCps = Math.max(1, Math.min(MAX_SAFE_CPS, minCps));
+            maxCps = Math.max(1, Math.min(MAX_SAFE_CPS, maxCps));
             toggleKeyCode = normalizeToggleKeyCode(toggleKeyCode);
         }
     }
@@ -290,7 +293,8 @@ public final class AutoLeftClient implements ClientModInitializer {
         try {
             Files.createDirectories(CONFIG_PATH.getParent());
             Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            LOGGER.error("Failed to save config: {}", e.getMessage());
         }
     }
 
