@@ -6,6 +6,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.util.ArrayList;
+import java.util.List;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
@@ -47,6 +49,8 @@ public final class TrackerClient implements ClientModInitializer {
    private long lastConfigCheckAtMs = 0L;
    private FileTime lastKnownConfigWriteTime;
    private Text hiddenEnemyHudText;
+   /** Players to box, computed once per tick and reused by every render frame. */
+   private final List<PlayerEntity> trackedSnapshot = new ArrayList<>();
    private boolean toggleKeyWasDown = false;
 
    public void onInitializeClient() {
@@ -64,6 +68,7 @@ public final class TrackerClient implements ClientModInitializer {
    private void tickTracker(MinecraftClient client) {
       this.maybeReloadConfig();
       this.handleToggleKey(client);
+      this.trackedSnapshot.clear();
       if (enabled && client.player != null && client.world != null) {
          PlayerEntity closestHiddenTarget = null;
          double closestHiddenDistanceSquared = Double.MAX_VALUE;
@@ -71,6 +76,7 @@ public final class TrackerClient implements ClientModInitializer {
 
          for (PlayerEntity target : client.world.getPlayers()) {
             if (this.shouldTrackHiddenEnemy(client, target)) {
+               this.trackedSnapshot.add(target);
                hiddenTargetCount++;
                double distanceSquared = client.player.squaredDistanceTo(target);
                if (distanceSquared < closestHiddenDistanceSquared) {
@@ -89,25 +95,29 @@ public final class TrackerClient implements ClientModInitializer {
    }
 
    private void renderEnemyHitboxes(WorldRenderContext context) {
-      MinecraftClient client = MinecraftClient.getInstance();
-      if (enabled && client.player != null && context.world() != null) {
-         MatrixStack matrices = context.matrixStack();
-         if (matrices != null) {
-            Vec3d cameraPos = context.camera().getPos();
-            matrices.push();
-            matrices.translate(-cameraPos.x, -cameraPos.y, -cameraPos.z);
-            VertexConsumer lines = this.wallHitboxVertexConsumers.getBuffer(RenderLayer.getLines());
+      if (!enabled || this.trackedSnapshot.isEmpty() || context.world() == null) {
+         return;
+      }
+      MatrixStack matrices = context.matrixStack();
+      if (matrices == null) {
+         return;
+      }
+      Vec3d cameraPos = context.camera().getPos();
+      matrices.push();
+      matrices.translate(-cameraPos.x, -cameraPos.y, -cameraPos.z);
+      VertexConsumer lines = this.wallHitboxVertexConsumers.getBuffer(RenderLayer.getLines());
 
-            for (PlayerEntity target : context.world().getPlayers()) {
-               if (this.shouldTrackHiddenEnemy(client, target)) {
-                  VertexRendering.drawBox(matrices, lines, target.getBoundingBox().expand(0.03), 1.0F, 0.2F, 0.2F, 0.95F);
-               }
-            }
-
-            matrices.pop();
-            this.wallHitboxVertexConsumers.draw();
+      // Draw from the tick snapshot instead of re-scanning + re-running the team/range
+      // test every frame. Each box is still read from the live entity, so it tracks
+      // interpolated movement exactly as before; isAlive() drops anyone who just left.
+      for (PlayerEntity target : this.trackedSnapshot) {
+         if (target.isAlive()) {
+            VertexRendering.drawBox(matrices, lines, target.getBoundingBox().expand(0.03), 1.0F, 0.2F, 0.2F, 0.95F);
          }
       }
+
+      matrices.pop();
+      this.wallHitboxVertexConsumers.draw();
    }
 
    private void handleToggleKey(MinecraftClient client) {
