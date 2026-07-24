@@ -37,8 +37,13 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
     private static final int CURRENT_CONFIG_VERSION = 4;
-    /** Conservative CPS hard-ceiling for Release; also the GUI slider maximum. */
-    private static final int MAX_SAFE_CPS = 30;
+    /**
+     * CPS hard-ceiling. The scheduler emits at most one pulse per client tick and the
+     * client ticks at ~20 TPS, so ~20 CPS is the real executable rate — anything above
+     * would just be a displayed value the mod can never actually deliver. Also the GUI
+     * slider maximum. Kept in sync with {@link com.masteryj.core.ActionBudget}.
+     */
+    private static final int MAX_SAFE_CPS = 20;
     private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
     private static final InputUtil.Key LEFT_MOUSE = InputUtil.Type.MOUSE.createFromCode(0);
 

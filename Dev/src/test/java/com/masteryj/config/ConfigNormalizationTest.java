@@ -22,34 +22,66 @@ class ConfigNormalizationTest {
     // ---- Min CPS / Max CPS validation (AutoLeft + AutoRight) ----
 
     @Test
-    void autoLeftClampsCpsToThirtyAndFixesInversion() {
+    void autoLeftClampsCpsToTwentyAndFixesInversion() {
         AutoLeftClient.Config c = new AutoLeftClient.Config();
-        c.minCps = 9999;   // absurd -> clamps to 30
+        c.minCps = 9999;   // absurd -> clamps to 20
         c.maxCps = -5;      // non-positive -> clamps to 1, then min>max is corrected by swap
         c.normalize();
         assertEquals(1, c.minCps, "after clamp+swap the lower bound is 1");
-        assertEquals(30, c.maxCps, "after clamp+swap the upper bound is the 30 CPS ceiling");
+        assertEquals(20, c.maxCps, "after clamp+swap the upper bound is the 20 CPS ceiling");
         assertTrue(c.minCps <= c.maxCps, "min must never exceed max");
     }
 
     @Test
-    void autoRightClampsCpsToThirty() {
+    void autoRightClampsCpsToTwenty() {
         AutoRightClient.Config c = new AutoRightClient.Config();
         c.minCps = 0;
         c.maxCps = 500_000;
         c.normalize();
         assertEquals(1, c.minCps);
-        assertEquals(30, c.maxCps, "absurd CPS clamps down to the 30 CPS ceiling");
+        assertEquals(20, c.maxCps, "absurd CPS clamps down to the 20 CPS ceiling");
+    }
+
+    @Test
+    void cpsBoundaryValuesClampAtTwenty() {
+        // The exact contract the spec requires: 1 stays 1, 20 stays 20, and every
+        // unexecutable value (21 / 30 / 40 / 1000) is pulled down to the 20 ceiling.
+        assertEquals(1, normalizedMax(1),  "1 CPS is preserved");
+        assertEquals(20, normalizedMax(20), "20 CPS is preserved");
+        assertEquals(20, normalizedMax(21), "21 -> 20");
+        assertEquals(20, normalizedMax(30), "30 -> 20");
+        assertEquals(20, normalizedMax(40), "40 -> 20");
+        assertEquals(20, normalizedMax(1000), "1000 -> 20");
+    }
+
+    @Test
+    void negativeCpsBecomesSafeMinimum() {
+        AutoLeftClient.Config c = new AutoLeftClient.Config();
+        c.minCps = -100;
+        c.maxCps = -1;
+        c.normalize();
+        assertEquals(1, c.minCps, "negative min -> safe minimum 1");
+        assertEquals(1, c.maxCps, "negative max -> safe minimum 1");
+        assertTrue(c.minCps <= c.maxCps);
+    }
+
+    /** Run the real AutoLeft normalize with min==max==cps and return the clamped value. */
+    private static int normalizedMax(int cps) {
+        AutoLeftClient.Config c = new AutoLeftClient.Config();
+        c.minCps = cps;
+        c.maxCps = cps;
+        c.normalize();
+        return c.maxCps;
     }
 
     @Test
     void minGreaterThanMaxIsSwapped() {
         AutoRightClient.Config c = new AutoRightClient.Config();
-        c.minCps = 25;   // both in range but inverted
-        c.maxCps = 10;
+        c.minCps = 18;   // both in range (<=20) but inverted
+        c.maxCps = 7;
         c.normalize();
-        assertEquals(10, c.minCps, "min>max is corrected (swapped), not left inverted");
-        assertEquals(25, c.maxCps);
+        assertEquals(7, c.minCps, "min>max is corrected (swapped), not left inverted");
+        assertEquals(18, c.maxCps);
         assertTrue(c.minCps <= c.maxCps);
     }
 
@@ -59,8 +91,8 @@ class ConfigNormalizationTest {
         left.minCps = 100;
         left.maxCps = 1000;
         left.normalize();
-        assertEquals(30, left.minCps);
-        assertEquals(30, left.maxCps);
+        assertEquals(20, left.minCps);
+        assertEquals(20, left.maxCps);
     }
 
     @Test
@@ -69,8 +101,8 @@ class ConfigNormalizationTest {
         c.configVersion = 1; // simulate an old file
         c.normalize();
         assertEquals(4, c.configVersion, "config version is upgraded, not reset");
-        assertTrue(c.minCps >= 1 && c.minCps <= 30);
-        assertTrue(c.maxCps >= 1 && c.maxCps <= 30);
+        assertTrue(c.minCps >= 1 && c.minCps <= 20);
+        assertTrue(c.maxCps >= 1 && c.maxCps <= 20);
     }
 
     @Test
@@ -83,7 +115,7 @@ class ConfigNormalizationTest {
         AutoRightClient.Config right = new AutoRightClient.Config();
         right.normalize();
         assertEquals(14, right.minCps);
-        assertEquals(28, right.maxCps);
+        assertEquals(20, right.maxCps, "AutoRight default max now sits on the 20 ceiling");
     }
 
     // ---- AimAssist float sanitisation ----
