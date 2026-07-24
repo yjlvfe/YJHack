@@ -12,8 +12,7 @@ Fabric client mod — 6 modules bundled into one JAR.
 > `extractGoodModClasses`/`mergeGoodModClasses`. All six modules compile from
 > `src/main/java`. Verified by `find Dev/bin` (empty), `grep` on build.gradle (only
 > comments), and `jar tf` on the output (each class once, no duplicates). Any older
-> doc claiming ModGui/Tracker/AimAssist run from pre-compiled `bin/` blobs is STALE —
-> see `report/_archive-stale/`.
+> doc claiming ModGui/Tracker/AimAssist run from pre-compiled `bin/` blobs is STALE.
 
 ## STRUCTURE
 ```
@@ -44,15 +43,15 @@ No `bin/`. No mixins JSON (NinjaBridge is pure `ClientModInitializer` + GLFW pol
 | Right-click classification | `autoright/RightClickPolicy.java` | `classify(stack,user)` → SINGLE_PRESS / BLOCK / PASS_THROUGH |
 | GUI | `modgui/ModGuiClient.java` (+ `modgui/theme/`, `modgui/component/`) | `YjScreen` base + screens in ModGuiClient; kit in `theme/YjTheme`; widgets in `component/`; typed config bridge |
 | Aim assist | `aimassist/AimAssistClient.java` | ≤3.5-block apply, FOV gate, raycast visibility, S-curve smoothing |
-| Tracker HUD + box | `tracker/TrackerClient.java` | HudRenderCallback (deprecated, kept intentionally) + WorldRenderEvents.BEFORE_DEBUG_RENDER |
-| Tests | `src/test/java/com/masteryj/` | `./gradlew test` — 19 JUnit via fabric-loader-junit (RightClickPolicy, rising-edge, config normalize) |
+| Tracker HUD + box | `tracker/TrackerClient.java` | HudRenderCallback (deprecated, kept intentionally) + WorldRenderEvents.BEFORE_DEBUG_RENDER. Tracked set computed once per tick; render draws the box from that snapshot (no per-frame rescan) |
+| Tests | `src/test/java/com/masteryj/` | `./gradlew test` — 20 JUnit via fabric-loader-junit (RightClickPolicy, rising-edge, config normalize incl. CPS cap) |
 | Entrypoints | `src/main/resources/fabric.mod.json` | 6 client entrypoints |
 
 ## CONVENTIONS
 - **One `XxxClient.java` per module** with a public inner `Config` class. The GUI is split into `modgui/ModGuiClient` (entrypoint + screen graph), `modgui/theme/YjTheme` (visual kit) and `modgui/component/*` (custom widgets).
 - **Config format**: Gson JSON → `<mod-id>.json` in the config dir; module auto-reloads only when the file's mtime changes (never on a timer alone).
 - **Keybinding**: direct GLFW polling (`GLFW.glfwGetKey`/`glfwGetMouseButton`) with configurable codes; codes ≥ 1000 encode mouse buttons (`1000 + button`).
-- **CPS**: `minCps + random.nextInt(maxCps-minCps+1)`, delay = `ceil(1000/cps)` ms. No Gaussian, no fluctuation.
+- **CPS**: `minCps + random.nextInt(maxCps-minCps+1)`, delay = `ceil(1000/cps)` ms. No Gaussian, no fluctuation. `normalize()` clamps min/max to `[1, MAX_SAFE_CPS=40]` — the same ceiling the GUI slider enforces — so a hand-edited file cannot request packet-spam click rates.
 - **Typed config bridge**: the GUI edits each module's OWN `Config` type and pushes it via the module's `applyRuntimeConfig(cfg)` (live) + `saveConfigStatic(cfg)` (file). No reflection, no field-name copying between different objects.
 
 ## KEY DETAILS — AutoRight / Fire Charge (RightClickPolicy)

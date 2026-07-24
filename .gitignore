@@ -18,17 +18,15 @@ Thumbs.db
 
 # Minecraft
 run/
-# Log dir created by fabric-loader-junit / Minecraft bootstrap during tests
+# Runtime dirs created by fabric-loader-junit / Minecraft bootstrap during tests
 Dev/logs/
+Dev/config/
+Dev/mods/
 logs/
 
-# Graphify
+# Graphify (only Dev/graphify-out is kept on disk; never committed)
 graphify-out/
 .graphify_*
 
-# Reports (generated HTML — kept on disk, not committed; incl. archived copies)
-report/**/*.html
-
-# JARs (generated outputs)
+# JARs (generated build outputs; the frozen baseline lives outside the repo)
 *.jar
-!YJHack.jar
