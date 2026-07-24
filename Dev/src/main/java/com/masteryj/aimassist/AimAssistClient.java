@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import com.masteryj.core.DebugStats;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -24,6 +25,7 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
+import net.minecraft.world.World;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,8 +35,10 @@ public final class AimAssistClient implements ClientModInitializer {
    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
    private static final int CURRENT_CONFIG_VERSION = 6;
+   private static final int MAX_VISIBILITY_CACHE = 64;
    private final Random random = new Random();
    private final Map<Integer, Vec3d> lastVisiblePointCache = new HashMap<>();
+   private World lastWorld;
    public static AimAssistClient.Config config;
    public static boolean enabled = false;
    public static int toggleKeyCode = -1;
@@ -56,12 +60,19 @@ public final class AimAssistClient implements ClientModInitializer {
    public void onInitializeClient() {
       config = this.loadConfig();
       applyRuntimeConfig(config);
-      ClientTickEvents.END_CLIENT_TICK.register(this::tickAimAssist);
+      ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("AimAssist", this::tickAimAssist));
    }
 
    private void tickAimAssist(MinecraftClient client) {
       this.maybeReloadConfig();
       this.handleToggleKey(client);
+      // World change (server switch / dimension): drop the visibility cache and target so
+      // no stale entity-id -> point mapping or player reference carries into the new world.
+      if (client.world != this.lastWorld) {
+         this.lastWorld = client.world;
+         this.clearTarget();
+         this.clearBlockBreakFocus();
+      }
       if (enabled && client.player != null && client.world != null && client.currentScreen == null) {
          long now = System.currentTimeMillis();
          boolean leftDown = this.isMouseDown(client, 0);
@@ -220,6 +231,12 @@ public final class AimAssistClient implements ClientModInitializer {
 
          for (Vec3d point : priorityPoints) {
             if (this.isVisiblePoint(client, start, point)) {
+               // Bound the cache: if it is full and this is a new entity, drop it wholesale
+               // (cheap, and it simply re-raycasts next tick — no aim-feel change).
+               if (this.lastVisiblePointCache.size() >= MAX_VISIBILITY_CACHE
+                       && !this.lastVisiblePointCache.containsKey(target.getId())) {
+                  this.lastVisiblePointCache.clear();
+               }
                this.lastVisiblePointCache.put(target.getId(), point);
                return point;
             }

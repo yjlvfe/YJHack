@@ -2,6 +2,7 @@ package com.masteryj.tracker;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.masteryj.core.DebugStats;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -56,7 +57,7 @@ public final class TrackerClient implements ClientModInitializer {
    public void onInitializeClient() {
       config = this.loadConfig();
       applyRuntimeConfig(config);
-      ClientTickEvents.END_CLIENT_TICK.register(this::tickTracker);
+      ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("Tracker", this::tickTracker));
       // NOTE: HudRenderCallback is deprecated in Fabric API 0.119, but intentionally
       // retained: migrating to the newer HUD layer API changes draw ordering/layering
       // of the hidden-enemy alert, and the Tracker HUD behaviour must stay identical.
