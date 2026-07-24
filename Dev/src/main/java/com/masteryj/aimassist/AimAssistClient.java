@@ -45,17 +45,17 @@ public final class AimAssistClient implements ClientModInitializer {
    public static float speed = 0.24F;
    public static float smoothness = 0.35F;
    public static float fov = 70.0F;
-   private long lastConfigCheckAtMs = 0L;
+   private long lastConfigCheckAtNanos = Long.MIN_VALUE;
    private FileTime lastKnownConfigWriteTime;
    private PlayerEntity target;
    private BlockPos blockBreakFocusPos;
-   private long blockBreakFocusStartedAtMs = 0L;
+   private long blockBreakFocusStartedAtNanos = 0L;
    private boolean toggleKeyWasDown = false;
    private float targetOffsetX = 0.0F;
    private float targetOffsetY = 0.0F;
    private float offsetVelocityX = 0.0F;
    private float offsetVelocityY = 0.0F;
-   private long lastOffsetUpdateMs = 0L;
+   private long lastOffsetUpdateNanos = Long.MIN_VALUE;
 
    public void onInitializeClient() {
       config = this.loadConfig();
@@ -74,7 +74,7 @@ public final class AimAssistClient implements ClientModInitializer {
          this.clearBlockBreakFocus();
       }
       if (enabled && client.player != null && client.world != null && client.currentScreen == null) {
-         long now = System.currentTimeMillis();
+         long now = System.nanoTime();
          boolean leftDown = this.isMouseDown(client, 0);
          if (!client.player.isAlive() || client.player.isSpectator()) {
             this.clearTarget();
@@ -194,9 +194,9 @@ public final class AimAssistClient implements ClientModInitializer {
    }
 
    private void updateDynamicOffset() {
-      long now = System.currentTimeMillis();
-      if (now - this.lastOffsetUpdateMs >= 50L) {
-         this.lastOffsetUpdateMs = now;
+      long now = System.nanoTime();
+      if (this.lastOffsetUpdateNanos == Long.MIN_VALUE || now - this.lastOffsetUpdateNanos >= 50_000_000L) {
+         this.lastOffsetUpdateNanos = now;
          float maxDrift = 0.8F;
          float accel = 0.06F;
          this.offsetVelocityX = this.offsetVelocityX + (float)(this.random.nextGaussian() * accel * 0.5);
@@ -273,10 +273,10 @@ public final class AimAssistClient implements ClientModInitializer {
          BlockPos currentPos = blockHitResult.getBlockPos().toImmutable();
          if (!currentPos.equals(this.blockBreakFocusPos)) {
             this.blockBreakFocusPos = currentPos;
-            this.blockBreakFocusStartedAtMs = now;
+            this.blockBreakFocusStartedAtNanos = now;
             return false;
          } else {
-            return now - this.blockBreakFocusStartedAtMs >= 500L;
+            return now - this.blockBreakFocusStartedAtNanos >= 500_000_000L;
          }
       } else {
          this.clearBlockBreakFocus();
@@ -286,7 +286,7 @@ public final class AimAssistClient implements ClientModInitializer {
 
    private void clearBlockBreakFocus() {
       this.blockBreakFocusPos = null;
-      this.blockBreakFocusStartedAtMs = 0L;
+      this.blockBreakFocusStartedAtNanos = 0L;
    }
 
    private boolean isMouseDown(MinecraftClient client, int button) {
@@ -333,9 +333,9 @@ public final class AimAssistClient implements ClientModInitializer {
    }
 
    private void maybeReloadConfig() {
-      long now = System.currentTimeMillis();
-      if (now - this.lastConfigCheckAtMs >= 5000L) {
-         this.lastConfigCheckAtMs = now;
+      long now = System.nanoTime();
+      if (this.lastConfigCheckAtNanos == Long.MIN_VALUE || now - this.lastConfigCheckAtNanos >= 5_000_000_000L) {
+         this.lastConfigCheckAtNanos = now;
 
          try {
             if (!Files.exists(CONFIG_PATH)) {

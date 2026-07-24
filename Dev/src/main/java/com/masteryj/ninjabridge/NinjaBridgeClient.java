@@ -30,11 +30,12 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("ninjabridge.json");
     private static final int CURRENT_CONFIG_VERSION = 7;
-    private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
+    private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
     private static final int DEFAULT_KEY = GLFW.GLFW_KEY_RIGHT_SHIFT;
     private static final int MOUSE_OFF = 1000;
-    /** Minimum gap between auto-switch hotbar changes — debounces any boundary oscillation. */
-    private static final long SWITCH_COOLDOWN_MS = 120L;
+    /** Minimum gap between auto-switch hotbar changes — debounces any boundary oscillation.
+     *  Monotonic ({@link System#nanoTime()}) so a wall-clock change can't defeat it. */
+    private static final long SWITCH_COOLDOWN_NANOS = 120_000_000L;
 
     private final Map<Block, Boolean> blockCache = new IdentityHashMap<>();
 
@@ -44,13 +45,13 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     public static boolean active = false;
     public static boolean autoSwitch = true;
 
-    private long lastCfg = 0L;
+    private long lastCfgNanos = Long.MIN_VALUE;
     private FileTime lastWt;
     private boolean wasDown = false;
     private boolean prevAlive = true;
     private int lastSlot = -1;
     private boolean wasSneaking = false;
-    private long lastSwitchAtMs = 0L;
+    private long lastSwitchAtNanos = Long.MIN_VALUE;
 
     /** Drive the vanilla sneak key directly; setPressed is sufficient on 1.21.5.
      *  Only ever called on a genuine state change, so each call is one transition. */
@@ -114,7 +115,7 @@ public final class NinjaBridgeClient implements ClientModInitializer {
             unsneak(c); return;
         }
 
-        long now = System.currentTimeMillis();
+        long now = System.nanoTime();
         if (autoSwitch) { doAutoSwitch(c, now); }
 
         BlockPos below = BlockPos.ofFloored(c.player.getX(), c.player.getY() - 1.0D, c.player.getZ());
@@ -153,9 +154,9 @@ public final class NinjaBridgeClient implements ClientModInitializer {
      *  so a boundary case can never emit a burst of slot-change packets. */
     private void switchTo(MinecraftClient c, int slot, long now) {
         if (!needsSlotSwitch(slot, c.player.getInventory().getSelectedSlot())) { return; }
-        if (now - lastSwitchAtMs < SWITCH_COOLDOWN_MS) { return; }
+        if (lastSwitchAtNanos != Long.MIN_VALUE && now - lastSwitchAtNanos < SWITCH_COOLDOWN_NANOS) { return; }
         c.player.getInventory().setSelectedSlot(slot);
-        lastSwitchAtMs = now;
+        lastSwitchAtNanos = now;
         DebugStats.onSlotChange();
     }
 
@@ -211,9 +212,9 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     }
 
     private void maybeReload() {
-        long now = System.currentTimeMillis();
-        if (now - lastCfg < CONFIG_RELOAD_INTERVAL_MS) return;
-        lastCfg = now;
+        long now = System.nanoTime();
+        if (lastCfgNanos != Long.MIN_VALUE && now - lastCfgNanos < CONFIG_RELOAD_INTERVAL_NANOS) return;
+        lastCfgNanos = now;
         try {
             if (!Files.exists(CONFIG_PATH)) return;
             FileTime wt = Files.getLastModifiedTime(CONFIG_PATH);

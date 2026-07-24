@@ -80,4 +80,60 @@ class ClickSchedulerTest {
         s.clear();                        // GUI open / focus loss / world null / disable
         assertTrue(s.due(1000L), "after a reset the next physical press fires immediately");
     }
+
+    @Test
+    void lagOfOneSecondProducesExactlyOnePulse() {
+        ClickScheduler s = new ClickScheduler();
+        s.rearm(0L, 50);                 // 20 CPS
+        long resume = 1000L;             // 1s stall
+        int pulses = 0;
+        if (s.due(resume)) { pulses++; s.rearm(resume, 50); }
+        assertEquals(1, pulses, "a 1s stall yields exactly ONE pulse, not ~20");
+        assertFalse(s.due(resume));
+    }
+
+    /** 200 ticks == 10 s at 20 TPS: times 0,50,…,9950 ms. */
+    private static long[] tenSecondsOfTicks() {
+        long[] t = new long[200];
+        for (int i = 0; i < t.length; i++) {
+            t[i] = i * 50L;
+        }
+        return t;
+    }
+
+    @Test
+    void cadenceMatchesConfiguredCpsOverTenSeconds() {
+        long[] ticks = tenSecondsOfTicks();
+        // delay = ceil(1000/cps); one pulse per tick is the hard ceiling (20 CPS).
+        assertEquals(10, emittedOverTicks(ticks, 1000), "1 CPS -> ~10 pulses in 10s");
+        assertEquals(50, emittedOverTicks(ticks, 200), "5 CPS -> ~50 pulses in 10s");
+        assertEquals(100, emittedOverTicks(ticks, 100), "10 CPS -> ~100 pulses in 10s");
+        assertEquals(200, emittedOverTicks(ticks, 50), "20 CPS -> one pulse every tick");
+    }
+
+    @Test
+    void changingCpsDoesNotCompensateForThePast() {
+        // Fast schedule, a long stall, then resume at a slower CPS: the stall must still
+        // contribute exactly ONE pulse — the past is never replayed to "catch up".
+        ClickScheduler s = new ClickScheduler();
+        s.rearm(0L, 50);                 // 20 CPS
+        long resume = 5000L;             // 5s stall
+        int pulses = 0;
+        if (s.due(resume)) { pulses++; s.rearm(resume, 200); }   // switched to 5 CPS
+        assertEquals(1, pulses, "one pulse for the whole stall, regardless of the new CPS");
+        assertFalse(s.due(resume), "rescheduled from now at the new rate — no backlog");
+    }
+
+    @Test
+    void disableThenEnableDoesNotReplayMissedPulses() {
+        ClickScheduler s = new ClickScheduler();
+        s.rearm(0L, 50);
+        s.clear();                        // disable
+        s.armImmediate();                 // re-enable: fresh press
+        long now = 10_000L;
+        int pulses = 0;
+        if (s.due(now)) { pulses++; s.rearm(now, 50); }
+        assertEquals(1, pulses, "re-enabling emits ONE fresh pulse, never a backlog of missed ones");
+        assertFalse(s.due(now));
+    }
 }

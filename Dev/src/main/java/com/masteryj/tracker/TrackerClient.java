@@ -47,7 +47,7 @@ public final class TrackerClient implements ClientModInitializer {
    public static double range = 96.0;
    public static int hudOffsetX = 0;
    public static int hudY = 8;
-   private long lastConfigCheckAtMs = 0L;
+   private long lastConfigCheckAtNanos = Long.MIN_VALUE;
    private FileTime lastKnownConfigWriteTime;
    private Text hiddenEnemyHudText;
    /** Players to box, computed once per tick and reused by every render frame. */
@@ -264,9 +264,9 @@ public final class TrackerClient implements ClientModInitializer {
    }
 
    private void maybeReloadConfig() {
-      long now = System.currentTimeMillis();
-      if (now - this.lastConfigCheckAtMs >= 5000L) {
-         this.lastConfigCheckAtMs = now;
+      long now = System.nanoTime();
+      if (this.lastConfigCheckAtNanos == Long.MIN_VALUE || now - this.lastConfigCheckAtNanos >= 5_000_000_000L) {
+         this.lastConfigCheckAtNanos = now;
 
          try {
             if (!Files.exists(CONFIG_PATH)) {

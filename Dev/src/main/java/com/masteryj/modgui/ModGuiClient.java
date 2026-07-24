@@ -109,9 +109,9 @@ public final class ModGuiClient implements ClientModInitializer {
       private final List<Help> helps = new ArrayList<>();
       private List<Text> pendingTooltip;
       private String toastMessage;
-      private long toastUntilMs;
+      private long toastUntilNanos;
       protected boolean dirty;
-      private long lastEditMs;
+      private long lastEditNanos;
 
       protected YjScreen(Screen parent, String title) {
          super(Text.literal(title));
@@ -186,19 +186,19 @@ public final class ModGuiClient implements ClientModInitializer {
       protected void markEdited() {
          this.applyLive();
          this.dirty = true;
-         this.lastEditMs = System.currentTimeMillis();
+         this.lastEditNanos = System.nanoTime();
       }
 
       protected void showToast(String message) {
          this.toastMessage = message;
-         this.toastUntilMs = System.currentTimeMillis() + 1600L;
+         this.toastUntilNanos = System.nanoTime() + 1_600_000_000L;
       }
 
       @Override
       public void tick() {
          super.tick();
          // Debounced save: commit shortly after the last edit, never every frame.
-         if (this.dirty && System.currentTimeMillis() - this.lastEditMs > 350L) {
+         if (this.dirty && System.nanoTime() - this.lastEditNanos > 350_000_000L) {
             this.commit();
             this.dirty = false;
          }
@@ -337,7 +337,7 @@ public final class ModGuiClient implements ClientModInitializer {
          if (this.pendingTooltip != null && !this.pendingTooltip.isEmpty()) {
             ctx.drawTooltip(this.textRenderer, this.pendingTooltip, mouseX, mouseY);
          }
-         if (this.toastMessage != null && System.currentTimeMillis() < this.toastUntilMs) {
+         if (this.toastMessage != null && System.nanoTime() < this.toastUntilNanos) {
             TextRenderer tr = this.textRenderer;
             int tw = tr.getWidth(this.toastMessage) + 20;
             int tx = winX() + winW() - tw - 12;

@@ -44,7 +44,8 @@ public final class AutoLeftClient implements ClientModInitializer {
      * slider maximum. Kept in sync with {@link com.masteryj.core.ActionBudget}.
      */
     private static final int MAX_SAFE_CPS = 20;
-    private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
+    private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
+    private static final long MS_TO_NANOS = 1_000_000L;
     private static final InputUtil.Key LEFT_MOUSE = InputUtil.Type.MOUSE.createFromCode(0);
 
     private final Random random = new Random();
@@ -56,7 +57,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     public static int toggleKeyCode = -1;
     private int currentDelayMs = 0;
     private boolean leftSyntheticDown = false;
-    private long lastConfigCheckAtMs = 0L;
+    private long lastConfigCheckAtNanos = Long.MIN_VALUE;
     private FileTime lastKnownConfigWriteTime = null;
     private boolean toggleKeyWasDown = false;
 
@@ -89,7 +90,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             return;
         }
 
-        long now = System.currentTimeMillis();
+        long now = System.nanoTime();
 
         // Creative inventory screen: hold left button only, no auto-click
         if (client.currentScreen instanceof CreativeInventoryScreen) {
@@ -109,14 +110,14 @@ public final class AutoLeftClient implements ClientModInitializer {
         // dropped and the next pulse is rescheduled from now — a lag spike can never be
         // replayed as a burst. The shared ActionBudget is the final combined-rate guard.
         if (leftScheduler.due(now)) {
-            if (ActionBudget.INSTANCE.tryConsume(now)) {
+            if (ActionBudget.INSTANCE.tryConsume(ActionBudget.Module.LEFT, now)) {
                 triggerLeftPulse();
                 DebugStats.onAutoLeftPulse();
             } else {
-                DebugStats.onDroppedBacklog();
+                DebugStats.onAutoLeftBudgetRejected();
             }
             scheduleNextDelay();
-            leftScheduler.rearm(now, currentDelayMs);
+            leftScheduler.rearm(now, (long) currentDelayMs * MS_TO_NANOS);
         }
 
         releaseLeftHold();
@@ -144,6 +145,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     private void resetState() {
         releaseLeftHold();
         leftScheduler.clear();
+        ActionBudget.INSTANCE.reset(ActionBudget.Module.LEFT);
     }
 
     /** Simple CPS: random integer between minCps and maxCps (inclusive). */
@@ -238,9 +240,9 @@ public final class AutoLeftClient implements ClientModInitializer {
     // --- Config persistence ---
 
     private void maybeReloadConfig() {
-        long now = System.currentTimeMillis();
-        if (now - lastConfigCheckAtMs < CONFIG_RELOAD_INTERVAL_MS) return;
-        lastConfigCheckAtMs = now;
+        long now = System.nanoTime();
+        if (lastConfigCheckAtNanos != Long.MIN_VALUE && now - lastConfigCheckAtNanos < CONFIG_RELOAD_INTERVAL_NANOS) return;
+        lastConfigCheckAtNanos = now;
         try {
             if (!Files.exists(CONFIG_PATH)) return;
             FileTime wt = Files.getLastModifiedTime(CONFIG_PATH);

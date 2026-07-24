@@ -12,8 +12,11 @@ import org.slf4j.LoggerFactory;
  *
  * <p>When disabled every counter method is a single predictable {@code if (ENABLED)} branch and
  * {@link #timed} returns the delegate unchanged, so the release path is behaviourally identical
- * and pays effectively nothing. It logs an aggregate summary at most once every 10 s — never
- * per-packet or per-tick — and records no player data and no packet contents.
+ * and pays effectively nothing — no strings, no map updates, no allocation, no timing wrapper.
+ * When enabled it logs an aggregate summary at most once every 10 s (measured on the monotonic
+ * {@link System#nanoTime()} clock) — never per-tick, per-click or per-packet — and records no
+ * player data and no packet contents. A dropped pulse is, by construction (no catch-up), exactly
+ * a budget rejection, so "budget rejected" doubles as the backlog-dropped count.
  */
 public final class DebugStats {
 
@@ -22,29 +25,38 @@ public final class DebugStats {
     /** Off unless the process was started with {@code -Dyjhack.debug=true}. */
     public static final boolean ENABLED = Boolean.getBoolean("yjhack.debug");
 
-    private static final long LOG_INTERVAL_MS = 10_000L;
+    private static final long LOG_INTERVAL_NANOS = 10_000_000_000L;
 
     // Synthetic-action / state-change counters (per 10 s window).
-    private static long autoLeftPulses;
-    private static long autoRightBlockPulses;
+    private static long autoLeftEmitted;
+    private static long autoLeftBudgetRejected;
+    private static long autoRightBlockEmitted;
+    private static long autoRightBudgetRejected;
     private static long singlePressSuppressions;
     private static long sneakTransitions;
     private static long slotChanges;
-    private static long droppedBacklog;
 
     // Per-module tick timing: name -> {count, totalNanos, maxNanos, over50ms, over100ms}.
     private static final Map<String, long[]> TICKS = new HashMap<>();
-    private static long lastLogMs;
+    private static long lastLogNanos = Long.MIN_VALUE;
 
     private DebugStats() {
     }
 
     public static void onAutoLeftPulse() {
-        if (ENABLED) autoLeftPulses++;
+        if (ENABLED) autoLeftEmitted++;
+    }
+
+    public static void onAutoLeftBudgetRejected() {
+        if (ENABLED) autoLeftBudgetRejected++;
     }
 
     public static void onAutoRightBlockPulse() {
-        if (ENABLED) autoRightBlockPulses++;
+        if (ENABLED) autoRightBlockEmitted++;
+    }
+
+    public static void onAutoRightBudgetRejected() {
+        if (ENABLED) autoRightBudgetRejected++;
     }
 
     public static void onSinglePressSuppressed() {
@@ -59,10 +71,6 @@ public final class DebugStats {
         if (ENABLED) slotChanges++;
     }
 
-    public static void onDroppedBacklog() {
-        if (ENABLED) droppedBacklog++;
-    }
-
     /**
      * Wrap a per-tick callback with timing. Returns the delegate <b>unchanged</b> when disabled,
      * so registration and runtime are byte-for-byte the release behaviour with debug off.
@@ -75,7 +83,7 @@ public final class DebugStats {
             long start = System.nanoTime();
             delegate.onEndTick(client);
             record(module, System.nanoTime() - start);
-            maybeLog(System.currentTimeMillis());
+            maybeLog(start);
         };
     }
 
@@ -91,14 +99,20 @@ public final class DebugStats {
         if (ms >= 100) s[4]++;
     }
 
-    private static void maybeLog(long now) {
-        if (now - lastLogMs < LOG_INTERVAL_MS) {
+    private static void maybeLog(long nowNanos) {
+        if (lastLogNanos == Long.MIN_VALUE) {
+            lastLogNanos = nowNanos;   // first tick: start the window, don't log zeros
             return;
         }
-        lastLogMs = now;
-        LOGGER.info("[yjhack 10s] left={} rightBlock={} spSuppress={} sneak={} slot={} dropped={} maxActions/tick={}",
-                autoLeftPulses, autoRightBlockPulses, singlePressSuppressions,
-                sneakTransitions, slotChanges, droppedBacklog, ActionBudget.INSTANCE.maxInOneTick());
+        if (nowNanos - lastLogNanos < LOG_INTERVAL_NANOS) {
+            return;
+        }
+        lastLogNanos = nowNanos;
+        // requested == emitted + budgetRejected (no separate backlog exists without catch-up).
+        LOGGER.info("[yjhack 10s] AutoLeft req/emit/budgetRej={}/{}/{} AutoRight req/emit/budgetRej={}/{}/{} spSuppress={} sneak={} slot={} maxActions/tick={}",
+                autoLeftEmitted + autoLeftBudgetRejected, autoLeftEmitted, autoLeftBudgetRejected,
+                autoRightBlockEmitted + autoRightBudgetRejected, autoRightBlockEmitted, autoRightBudgetRejected,
+                singlePressSuppressions, sneakTransitions, slotChanges, ActionBudget.INSTANCE.maxInOneTick());
         for (Map.Entry<String, long[]> e : TICKS.entrySet()) {
             long[] s = e.getValue();
             if (s[0] == 0) {
@@ -107,8 +121,8 @@ public final class DebugStats {
             LOGGER.info("[yjhack 10s] {} tick avg={}us max={}us >50ms={} >100ms={}",
                     e.getKey(), s[1] / s[0] / 1000L, s[2] / 1000L, s[3], s[4]);
         }
-        autoLeftPulses = autoRightBlockPulses = singlePressSuppressions = 0;
-        sneakTransitions = slotChanges = droppedBacklog = 0;
+        autoLeftEmitted = autoLeftBudgetRejected = autoRightBlockEmitted = autoRightBudgetRejected = 0;
+        singlePressSuppressions = sneakTransitions = slotChanges = 0;
         TICKS.clear();
     }
 }

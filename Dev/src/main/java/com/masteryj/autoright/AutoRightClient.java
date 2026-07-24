@@ -40,9 +40,10 @@ public final class AutoRightClient implements ClientModInitializer {
      * slider maximum. Kept in sync with {@link com.masteryj.core.ActionBudget}.
      */
     private static final int MAX_SAFE_CPS = 20;
-    private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
-    private static final long RIGHT_BLOCK_HOLD_DELAY_MS = 10L;
-    private static final long QUICK_TAP_THRESHOLD_MS = 10L;
+    private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
+    private static final long RIGHT_BLOCK_HOLD_DELAY_NANOS = 10_000_000L;
+    private static final long QUICK_TAP_THRESHOLD_NANOS = 10_000_000L;
+    private static final long MS_TO_NANOS = 1_000_000L;
     private static final InputUtil.Key RIGHT_MOUSE = InputUtil.Type.MOUSE.createFromCode(1);
 
     private final Random random = new Random();
@@ -53,10 +54,10 @@ public final class AutoRightClient implements ClientModInitializer {
     public static boolean blockMode = true;
     public static int toggleKeyCode = -1;
     private boolean rightWasDown = false;
-    private long rightPressedAtMs = 0L;
+    private long rightPressedAtNanos = 0L;
     private int rightCurrentDelayMs = 0;
     private boolean blockBurstStarted = false;
-    private long lastConfigCheckAtMs = 0L;
+    private long lastConfigCheckAtNanos = Long.MIN_VALUE;
     private FileTime lastKnownConfigWriteTime = null;
     private boolean toggleKeyWasDown = false;
 
@@ -78,7 +79,7 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        long now = System.currentTimeMillis();
+        long now = System.nanoTime();
 
         ItemStack held = client.player != null ? client.player.getMainHandStack() : ItemStack.EMPTY;
         RightClickPolicy.Kind kind = RightClickPolicy.classify(held, client.player);
@@ -88,7 +89,7 @@ public final class AutoRightClient implements ClientModInitializer {
 
         // A fresh press resets per-press timing state (used by the block burst path).
         if (rising) {
-            rightPressedAtMs = now;
+            rightPressedAtNanos = now;
             blockBurstStarted = false;
             rightScheduler.armImmediate();
         }
@@ -131,7 +132,7 @@ public final class AutoRightClient implements ClientModInitializer {
     private void handleBlockBurst(long now, boolean mouseDown) {
         if (!mouseDown) {
             // Released: a very short tap still places one block (vanilla-like feel).
-            if (rightWasDown && now - rightPressedAtMs < QUICK_TAP_THRESHOLD_MS) {
+            if (rightWasDown && now - rightPressedAtNanos < QUICK_TAP_THRESHOLD_NANOS) {
                 emitBlockPulse(now);
             }
             rightScheduler.clear();
@@ -139,8 +140,8 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        long pressDuration = now - rightPressedAtMs;
-        if (pressDuration < RIGHT_BLOCK_HOLD_DELAY_MS) {
+        long pressDuration = now - rightPressedAtNanos;
+        if (pressDuration < RIGHT_BLOCK_HOLD_DELAY_NANOS) {
             // Brief initial hold: let the first vanilla placement happen, don't burst yet.
             return;
         }
@@ -149,7 +150,7 @@ public final class AutoRightClient implements ClientModInitializer {
             blockBurstStarted = true;
             emitBlockPulse(now);
             scheduleNextRightDelay();
-            rightScheduler.rearm(now, rightCurrentDelayMs);
+            rightScheduler.rearm(now, (long) rightCurrentDelayMs * MS_TO_NANOS);
             return;
         }
 
@@ -158,17 +159,17 @@ public final class AutoRightClient implements ClientModInitializer {
         if (rightScheduler.due(now)) {
             emitBlockPulse(now);
             scheduleNextRightDelay();
-            rightScheduler.rearm(now, rightCurrentDelayMs);
+            rightScheduler.rearm(now, (long) rightCurrentDelayMs * MS_TO_NANOS);
         }
     }
 
     /** Emit one synthetic block-place click if the shared budget allows; else drop it. */
     private void emitBlockPulse(long now) {
-        if (ActionBudget.INSTANCE.tryConsume(now)) {
+        if (ActionBudget.INSTANCE.tryConsume(ActionBudget.Module.RIGHT, now)) {
             clickMouseKey(RIGHT_MOUSE);
             DebugStats.onAutoRightBlockPulse();
         } else {
-            DebugStats.onDroppedBacklog();
+            DebugStats.onAutoRightBudgetRejected();
         }
     }
 
@@ -188,7 +189,8 @@ public final class AutoRightClient implements ClientModInitializer {
         // Guarantee nothing is left pressed and a fresh physical press is required.
         KeyBinding.setKeyPressed(RIGHT_MOUSE, false);
         rightScheduler.clear();
-        rightPressedAtMs = 0L;
+        ActionBudget.INSTANCE.reset(ActionBudget.Module.RIGHT);
+        rightPressedAtNanos = 0L;
         rightWasDown = false;
         blockBurstStarted = false;
     }
@@ -280,9 +282,9 @@ public final class AutoRightClient implements ClientModInitializer {
     // --- Config persistence ---
 
     private void maybeReloadConfig() {
-        long now = System.currentTimeMillis();
-        if (now - lastConfigCheckAtMs < CONFIG_RELOAD_INTERVAL_MS) return;
-        lastConfigCheckAtMs = now;
+        long now = System.nanoTime();
+        if (lastConfigCheckAtNanos != Long.MIN_VALUE && now - lastConfigCheckAtNanos < CONFIG_RELOAD_INTERVAL_NANOS) return;
+        lastConfigCheckAtNanos = now;
         try {
             if (!Files.exists(CONFIG_PATH)) return;
             FileTime wt = Files.getLastModifiedTime(CONFIG_PATH);
