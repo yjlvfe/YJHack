@@ -2,6 +2,7 @@ package com.masteryj.ninjabridge;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.masteryj.core.DebugStats;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -32,6 +33,8 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
     private static final int DEFAULT_KEY = GLFW.GLFW_KEY_RIGHT_SHIFT;
     private static final int MOUSE_OFF = 1000;
+    /** Minimum gap between auto-switch hotbar changes — debounces any boundary oscillation. */
+    private static final long SWITCH_COOLDOWN_MS = 120L;
 
     private final Map<Block, Boolean> blockCache = new IdentityHashMap<>();
 
@@ -47,17 +50,30 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private boolean prevAlive = true;
     private int lastSlot = -1;
     private boolean wasSneaking = false;
+    private long lastSwitchAtMs = 0L;
 
-    /** Drive the vanilla sneak key directly; setPressed is sufficient on 1.21.5. */
+    /** Drive the vanilla sneak key directly; setPressed is sufficient on 1.21.5.
+     *  Only ever called on a genuine state change, so each call is one transition. */
     private static void setSneakState(MinecraftClient c, boolean sneak) {
         c.options.sneakKey.setPressed(sneak);
+        DebugStats.onSneakTransition();
+    }
+
+    /** True only when the desired sneak state differs and the player is grounded. */
+    static boolean sneakShouldChange(boolean desiredSneak, boolean lastSneak, boolean onGround) {
+        return desiredSneak != lastSneak && onGround;
+    }
+
+    /** True only when the target hotbar slot is not already selected. */
+    static boolean needsSlotSwitch(int targetSlot, int currentSlot) {
+        return targetSlot != currentSlot;
     }
 
     @Override
     public void onInitializeClient() {
         config = loadConfig();
         applyRuntimeConfig(config);
-        ClientTickEvents.END_CLIENT_TICK.register(this::tick);
+        ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("NinjaBridge", this::tick));
     }
 
     private void tick(MinecraftClient c) {
@@ -98,25 +114,27 @@ public final class NinjaBridgeClient implements ClientModInitializer {
             unsneak(c); return;
         }
 
-        if (autoSwitch) { doAutoSwitch(c); }
+        long now = System.currentTimeMillis();
+        if (autoSwitch) { doAutoSwitch(c, now); }
 
         BlockPos below = BlockPos.ofFloored(c.player.getX(), c.player.getY() - 1.0D, c.player.getZ());
         boolean isAir = c.world.getBlockState(below).isAir();
 
-        if (isAir != wasSneaking && c.player.isOnGround()) {
+        // setSneakState only fires on a genuine state change (never re-sends the same state).
+        if (sneakShouldChange(isAir, wasSneaking, c.player.isOnGround())) {
             setSneakState(c, isAir);
             wasSneaking = isAir;
         }
     }
 
-    private void doAutoSwitch(MinecraftClient c) {
+    private void doAutoSwitch(MinecraftClient c, long now) {
         ItemStack held = c.player.getMainHandStack();
         if (isValidBlock(held)) { lastSlot = c.player.getInventory().getSelectedSlot(); return; }
 
         if (lastSlot >= 0 && lastSlot < 9) {
             ItemStack stack = c.player.getInventory().getStack(lastSlot);
             if (isValidBlock(stack)) {
-                c.player.getInventory().setSelectedSlot(lastSlot);
+                switchTo(c, lastSlot, now);
                 return;
             }
         }
@@ -124,11 +142,21 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         for (int i = 0; i < 9; i++) {
             ItemStack stack = c.player.getInventory().getStack(i);
             if (isValidBlock(stack)) {
-                c.player.getInventory().setSelectedSlot(i);
+                switchTo(c, i, now);
                 lastSlot = i; return;
             }
         }
         lastSlot = -1;
+    }
+
+    /** Switch the held hotbar slot only when it differs and the switch cooldown has elapsed,
+     *  so a boundary case can never emit a burst of slot-change packets. */
+    private void switchTo(MinecraftClient c, int slot, long now) {
+        if (!needsSlotSwitch(slot, c.player.getInventory().getSelectedSlot())) { return; }
+        if (now - lastSwitchAtMs < SWITCH_COOLDOWN_MS) { return; }
+        c.player.getInventory().setSelectedSlot(slot);
+        lastSwitchAtMs = now;
+        DebugStats.onSlotChange();
     }
 
     private boolean isValidBlock(ItemStack stack) {
