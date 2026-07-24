@@ -2,6 +2,10 @@ package com.masteryj.autoright;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.masteryj.core.ActionBudget;
+import com.masteryj.core.ClickScheduler;
+import com.masteryj.core.DebugStats;
+import com.masteryj.core.GameplayGate;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -29,15 +33,15 @@ public final class AutoRightClient implements ClientModInitializer {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoright.json");
     private static final int CURRENT_CONFIG_VERSION = 4;
-    /** Hard CPS ceiling for hand-edited configs — matches the GUI slider maximum. */
-    private static final int MAX_SAFE_CPS = 40;
+    /** Conservative CPS hard-ceiling for Release; also the GUI slider maximum. */
+    private static final int MAX_SAFE_CPS = 30;
     private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
     private static final long RIGHT_BLOCK_HOLD_DELAY_MS = 10L;
     private static final long QUICK_TAP_THRESHOLD_MS = 10L;
-    private static final int MAX_CATCHUP_CLICKS_PER_TICK = 50;
     private static final InputUtil.Key RIGHT_MOUSE = InputUtil.Type.MOUSE.createFromCode(1);
 
     private final Random random = new Random();
+    private final ClickScheduler rightScheduler = new ClickScheduler();
 
     public static Config config;
     public static boolean enabled = true;
@@ -45,7 +49,6 @@ public final class AutoRightClient implements ClientModInitializer {
     public static int toggleKeyCode = -1;
     private boolean rightWasDown = false;
     private long rightPressedAtMs = 0L;
-    private long rightNextClickAtMs = 0L;
     private int rightCurrentDelayMs = 0;
     private boolean blockBurstStarted = false;
     private long lastConfigCheckAtMs = 0L;
@@ -56,7 +59,7 @@ public final class AutoRightClient implements ClientModInitializer {
     public void onInitializeClient() {
         config = loadConfig();
         applyRuntimeConfig(config);
-        ClientTickEvents.END_CLIENT_TICK.register(this::tickRightAutoClick);
+        ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("AutoRight", this::tickRightAutoClick));
     }
 
     private void tickRightAutoClick(MinecraftClient client) {
@@ -82,7 +85,7 @@ public final class AutoRightClient implements ClientModInitializer {
         if (rising) {
             rightPressedAtMs = now;
             blockBurstStarted = false;
-            rightNextClickAtMs = 0L;
+            rightScheduler.armImmediate();
         }
 
         switch (kind) {
@@ -113,8 +116,9 @@ public final class AutoRightClient implements ClientModInitializer {
             // Held beyond the initial press-tick: force the use key released so the
             // vanilla itemUseCooldown loop cannot re-fire this item while held.
             KeyBinding.setKeyPressed(RIGHT_MOUSE, false);
+            DebugStats.onSinglePressSuppressed();
         }
-        rightNextClickAtMs = 0L;
+        rightScheduler.armImmediate();
         blockBurstStarted = false;
     }
 
@@ -123,9 +127,9 @@ public final class AutoRightClient implements ClientModInitializer {
         if (!mouseDown) {
             // Released: a very short tap still places one block (vanilla-like feel).
             if (rightWasDown && now - rightPressedAtMs < QUICK_TAP_THRESHOLD_MS) {
-                clickMouseKey(RIGHT_MOUSE);
+                emitBlockPulse(now);
             }
-            rightNextClickAtMs = 0L;
+            rightScheduler.clear();
             blockBurstStarted = false;
             return;
         }
@@ -138,31 +142,34 @@ public final class AutoRightClient implements ClientModInitializer {
 
         if (!blockBurstStarted) {
             blockBurstStarted = true;
+            emitBlockPulse(now);
             scheduleNextRightDelay();
-            clickMouseKey(RIGHT_MOUSE);
-            rightNextClickAtMs = now + rightCurrentDelayMs;
+            rightScheduler.rearm(now, rightCurrentDelayMs);
             return;
         }
 
-        int clicks = 0;
-        while (now >= rightNextClickAtMs && clicks < MAX_CATCHUP_CLICKS_PER_TICK) {
-            clickMouseKey(RIGHT_MOUSE);
+        // One pulse per tick, NO catch-up: a late tick drops the missed placements and
+        // reschedules from now instead of bursting a backlog of block-place packets.
+        if (rightScheduler.due(now)) {
+            emitBlockPulse(now);
             scheduleNextRightDelay();
-            rightNextClickAtMs += rightCurrentDelayMs;
-            clicks++;
-            if (rightNextClickAtMs > now + 1000L) {
-                rightNextClickAtMs = now + rightCurrentDelayMs;
-                break;
-            }
+            rightScheduler.rearm(now, rightCurrentDelayMs);
         }
-        if (now >= rightNextClickAtMs) {
-            rightNextClickAtMs = now + rightCurrentDelayMs;
+    }
+
+    /** Emit one synthetic block-place click if the shared budget allows; else drop it. */
+    private void emitBlockPulse(long now) {
+        if (ActionBudget.INSTANCE.tryConsume(now)) {
+            clickMouseKey(RIGHT_MOUSE);
+            DebugStats.onAutoRightBlockPulse();
+        } else {
+            DebugStats.onDroppedBacklog();
         }
     }
 
     /** Leave vanilla input untouched (no synthetic clicks, no suppression). */
     private void passThrough() {
-        rightNextClickAtMs = 0L;
+        rightScheduler.armImmediate();
         blockBurstStarted = false;
     }
 
@@ -175,7 +182,7 @@ public final class AutoRightClient implements ClientModInitializer {
     private void resetRightAutoClickState() {
         // Guarantee nothing is left pressed and a fresh physical press is required.
         KeyBinding.setKeyPressed(RIGHT_MOUSE, false);
-        rightNextClickAtMs = 0L;
+        rightScheduler.clear();
         rightPressedAtMs = 0L;
         rightWasDown = false;
         blockBurstStarted = false;
@@ -205,14 +212,11 @@ public final class AutoRightClient implements ClientModInitializer {
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
-        if (client.player == null) return false;
-        if (client.world == null) return false;
-        if (client.currentScreen != null) return false;
-        if (!client.isWindowFocused()) return false;
-        if (!client.mouse.isCursorLocked()) return false;
-        if (!client.player.isAlive()) return false;
-        if (client.player.isSpectator()) return false;
-        return true;
+        boolean hasPlayer = client.player != null;
+        boolean hasWorld = client.world != null;
+        return GameplayGate.active(hasPlayer, hasWorld,
+                client.currentScreen != null, client.isWindowFocused(), client.mouse.isCursorLocked(),
+                hasPlayer && client.player.isAlive(), hasPlayer && client.player.isSpectator());
     }
 
     // --- Toggle key ---
@@ -255,11 +259,15 @@ public final class AutoRightClient implements ClientModInitializer {
             if (configVersion < CURRENT_CONFIG_VERSION) {
                 configVersion = CURRENT_CONFIG_VERSION;
             }
-            // Clamp CPS to the same ceiling the GUI slider enforces (MAX_SAFE_CPS)
-            // so a hand-edited file cannot produce absurd placement rates / packet spam.
-            // Ordering (min>max) is tolerated by scheduleNextRightDelay().
+            // Clamp CPS to the conservative Release ceiling (MAX_SAFE_CPS) so a hand-edited
+            // file cannot produce packet-spam placement rates, then enforce min <= max.
             minCps = Math.max(1, Math.min(MAX_SAFE_CPS, minCps));
             maxCps = Math.max(1, Math.min(MAX_SAFE_CPS, maxCps));
+            if (minCps > maxCps) {
+                int tmp = minCps;
+                minCps = maxCps;
+                maxCps = tmp;
+            }
             toggleKeyCode = normalizeToggleKeyCode(toggleKeyCode);
         }
     }

@@ -22,23 +22,45 @@ class ConfigNormalizationTest {
     // ---- Min CPS / Max CPS validation (AutoLeft + AutoRight) ----
 
     @Test
-    void autoLeftClampsCpsIntoRange() {
+    void autoLeftClampsCpsToThirtyAndFixesInversion() {
         AutoLeftClient.Config c = new AutoLeftClient.Config();
-        c.minCps = 9999;
-        c.maxCps = -5;
+        c.minCps = 9999;   // absurd -> clamps to 30
+        c.maxCps = -5;      // non-positive -> clamps to 1, then min>max is corrected by swap
         c.normalize();
-        assertEquals(40, c.minCps, "absurd CPS clamps down to the GUI ceiling (40)");
-        assertEquals(1, c.maxCps, "non-positive CPS clamps up to 1");
+        assertEquals(1, c.minCps, "after clamp+swap the lower bound is 1");
+        assertEquals(30, c.maxCps, "after clamp+swap the upper bound is the 30 CPS ceiling");
+        assertTrue(c.minCps <= c.maxCps, "min must never exceed max");
     }
 
     @Test
-    void autoRightClampsCpsIntoRange() {
+    void autoRightClampsCpsToThirty() {
         AutoRightClient.Config c = new AutoRightClient.Config();
         c.minCps = 0;
         c.maxCps = 500_000;
         c.normalize();
         assertEquals(1, c.minCps);
-        assertEquals(40, c.maxCps, "absurd CPS clamps down to the GUI ceiling (40)");
+        assertEquals(30, c.maxCps, "absurd CPS clamps down to the 30 CPS ceiling");
+    }
+
+    @Test
+    void minGreaterThanMaxIsSwapped() {
+        AutoRightClient.Config c = new AutoRightClient.Config();
+        c.minCps = 25;   // both in range but inverted
+        c.maxCps = 10;
+        c.normalize();
+        assertEquals(10, c.minCps, "min>max is corrected (swapped), not left inverted");
+        assertEquals(25, c.maxCps);
+        assertTrue(c.minCps <= c.maxCps);
+    }
+
+    @Test
+    void handEditedHundredAndThousandAreClamped() {
+        AutoLeftClient.Config left = new AutoLeftClient.Config();
+        left.minCps = 100;
+        left.maxCps = 1000;
+        left.normalize();
+        assertEquals(30, left.minCps);
+        assertEquals(30, left.maxCps);
     }
 
     @Test
@@ -47,8 +69,8 @@ class ConfigNormalizationTest {
         c.configVersion = 1; // simulate an old file
         c.normalize();
         assertEquals(4, c.configVersion, "config version is upgraded, not reset");
-        assertTrue(c.minCps >= 1 && c.minCps <= 40);
-        assertTrue(c.maxCps >= 1 && c.maxCps <= 40);
+        assertTrue(c.minCps >= 1 && c.minCps <= 30);
+        assertTrue(c.maxCps >= 1 && c.maxCps <= 30);
     }
 
     @Test

@@ -2,6 +2,10 @@ package com.masteryj.autoleft;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.masteryj.core.ActionBudget;
+import com.masteryj.core.ClickScheduler;
+import com.masteryj.core.DebugStats;
+import com.masteryj.core.GameplayGate;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -33,19 +37,18 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
     private static final int CURRENT_CONFIG_VERSION = 4;
-    /** Hard CPS ceiling for hand-edited configs — matches the GUI slider maximum. */
-    private static final int MAX_SAFE_CPS = 40;
+    /** Conservative CPS hard-ceiling for Release; also the GUI slider maximum. */
+    private static final int MAX_SAFE_CPS = 30;
     private static final long CONFIG_RELOAD_INTERVAL_MS = 5000L;
-    private static final int MAX_CATCHUP_PULSES_PER_TICK = 50;
     private static final InputUtil.Key LEFT_MOUSE = InputUtil.Type.MOUSE.createFromCode(0);
 
     private final Random random = new Random();
+    private final ClickScheduler leftScheduler = new ClickScheduler();
 
     public static Config config;
     public static boolean enabled = true;
     public static boolean weaponCheck = false;
     public static int toggleKeyCode = -1;
-    private long nextClickAtMs = 0L;
     private int currentDelayMs = 0;
     private boolean leftSyntheticDown = false;
     private long lastConfigCheckAtMs = 0L;
@@ -56,7 +59,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     public void onInitializeClient() {
         config = loadConfig();
         applyRuntimeConfig(config);
-        ClientTickEvents.END_CLIENT_TICK.register(this::tickLeftAutoClick);
+        ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("AutoLeft", this::tickLeftAutoClick));
     }
 
     private void tickLeftAutoClick(MinecraftClient client) {
@@ -85,41 +88,30 @@ public final class AutoLeftClient implements ClientModInitializer {
 
         // Creative inventory screen: hold left button only, no auto-click
         if (client.currentScreen instanceof CreativeInventoryScreen) {
-            nextClickAtMs = 0L;
+            leftScheduler.armImmediate();
             holdLeftMouse();
             return;
         }
 
         // Looking at a block → hold for mining (no CPS pulsing)
         if (client.crosshairTarget != null && client.crosshairTarget.getType() == HitResult.Type.BLOCK) {
-            nextClickAtMs = 0L;
+            leftScheduler.armImmediate();
             holdLeftMouse();
             return;
         }
 
-        // First click in a sequence
-        if (nextClickAtMs == 0L) {
-            triggerLeftPulse();
-            scheduleNextDelay();
-            nextClickAtMs = now + currentDelayMs;
-            return;
-        }
-
-        // Catch-up pulses if behind
-        int pulses = 0;
-        while (now >= nextClickAtMs && pulses < MAX_CATCHUP_PULSES_PER_TICK) {
-            triggerLeftPulse();
-            scheduleNextDelay();
-            nextClickAtMs += currentDelayMs;
-            pulses++;
-            if (nextClickAtMs > now + 1000L) {
-                nextClickAtMs = now + currentDelayMs;
-                break;
+        // One pulse per tick, NO catch-up. If the client stalled, the missed clicks are
+        // dropped and the next pulse is rescheduled from now — a lag spike can never be
+        // replayed as a burst. The shared ActionBudget is the final combined-rate guard.
+        if (leftScheduler.due(now)) {
+            if (ActionBudget.INSTANCE.tryConsume(now)) {
+                triggerLeftPulse();
+                DebugStats.onAutoLeftPulse();
+            } else {
+                DebugStats.onDroppedBacklog();
             }
-        }
-
-        if (now >= nextClickAtMs) {
-            nextClickAtMs = now + currentDelayMs;
+            scheduleNextDelay();
+            leftScheduler.rearm(now, currentDelayMs);
         }
 
         releaseLeftHold();
@@ -146,7 +138,7 @@ public final class AutoLeftClient implements ClientModInitializer {
 
     private void resetState() {
         releaseLeftHold();
-        nextClickAtMs = 0L;
+        leftScheduler.clear();
     }
 
     /** Simple CPS: random integer between minCps and maxCps (inclusive). */
@@ -173,14 +165,11 @@ public final class AutoLeftClient implements ClientModInitializer {
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
-        if (client.player == null) return false;
-        if (client.world == null) return false;
-        if (client.currentScreen != null) return false;
-        if (!client.isWindowFocused()) return false;
-        if (!client.mouse.isCursorLocked()) return false;
-        if (!client.player.isAlive()) return false;
-        if (client.player.isSpectator()) return false;
-        return true;
+        boolean hasPlayer = client.player != null;
+        boolean hasWorld = client.world != null;
+        return GameplayGate.active(hasPlayer, hasWorld,
+                client.currentScreen != null, client.isWindowFocused(), client.mouse.isCursorLocked(),
+                hasPlayer && client.player.isAlive(), hasPlayer && client.player.isSpectator());
     }
 
     private boolean isSwordOrAxe(ItemStack stack) {
@@ -228,11 +217,15 @@ public final class AutoLeftClient implements ClientModInitializer {
             if (configVersion < CURRENT_CONFIG_VERSION) {
                 configVersion = CURRENT_CONFIG_VERSION;
             }
-            // Clamp CPS to the same ceiling the GUI slider enforces (MAX_SAFE_CPS)
-            // so a hand-edited file cannot produce absurd click rates / packet spam.
-            // Ordering (min>max) is tolerated by scheduleNextDelay().
+            // Clamp CPS to the conservative Release ceiling (MAX_SAFE_CPS) so a hand-edited
+            // file cannot produce packet-spam click rates, then enforce min <= max.
             minCps = Math.max(1, Math.min(MAX_SAFE_CPS, minCps));
             maxCps = Math.max(1, Math.min(MAX_SAFE_CPS, maxCps));
+            if (minCps > maxCps) {
+                int tmp = minCps;
+                minCps = maxCps;
+                maxCps = tmp;
+            }
             toggleKeyCode = normalizeToggleKeyCode(toggleKeyCode);
         }
     }
