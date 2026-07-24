@@ -68,6 +68,13 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         }
         if (!enabled) { unsneak(c); active = false; return; }
 
+        // Pause while a screen is open or the window is unfocused — matches the gating
+        // the other modules use. Keeps the toggle (active) intact so bridging resumes
+        // on return, but never leaves the sneak key stuck down in a menu.
+        if (c.currentScreen != null || !c.isWindowFocused()) {
+            unsneak(c); wasDown = false; return;
+        }
+
         boolean alive = c.player.isAlive() && c.player.getHealth() > 0.0F;
         if (prevAlive && !alive) { active = false; unsneak(c); msg(c, false, false); }
         prevAlive = alive;
@@ -214,7 +221,13 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     }
 
     public static void saveConfigStatic(Config cfg) {
-        try { cfg.norm(); applyRuntimeConfig(cfg); Files.createDirectories(CONFIG_PATH.getParent()); Files.writeString(CONFIG_PATH, GSON.toJson(cfg)); } catch (IOException e) {}
+        try {
+            cfg.norm(); applyRuntimeConfig(cfg);
+            Files.createDirectories(CONFIG_PATH.getParent());
+            Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
+        } catch (IOException e) {
+            LOGGER.error("Failed to save config: {}", e.getMessage());
+        }
     }
 
     public static void applyRuntimeConfig(Config cfg) {
