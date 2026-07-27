@@ -10,11 +10,17 @@ package com.masteryj.core;
  * run in cannot let one module starve the other: whoever asks first never consumes the
  * other's allowance. Two caps per module:
  * <ul>
- *   <li>{@link #MAX_PER_TICK_PER_MODULE} = 1 — at most one synthetic action per module per
- *       client tick (the hard rate limiter; ~20 TPS ⇒ ~20 CPS).</li>
- *   <li>{@link #MAX_PER_SECOND_PER_MODULE} = 20 — a <b>sliding</b> one-second window (not a
+ *   <li>{@link #MAX_PER_TICK_PER_MODULE} = 2 — at most two synthetic actions per module per
+ *       client tick, matching the {@link ClickScheduler} two-pulses-per-tick cadence ceiling
+ *       (~20 TPS ⇒ up to ~40 CPS).</li>
+ *   <li>{@link #MAX_PER_SECOND_PER_MODULE} = 40 — a <b>sliding</b> one-second window (not a
  *       fixed window), so a batch can never straddle a second boundary and double up.</li>
  * </ul>
+ *
+ * <p>This is a secondary safety net, not the rate source: the phase accumulator already caps
+ * the cadence at two pulses per tick, so at a steady 40&nbsp;CPS on a normal 20&nbsp;TPS
+ * client the budget rejects nothing. A rejection means a genuine over-rate — a duplicate
+ * click path or a third pulse in one tick — which is exactly what we want caught.
  *
  * <p>Single-threaded (client tick only): no locks, no threads, no sleep, no allocation on the
  * hot path. All timing is passed in as {@code nowNanos} from the monotonic
@@ -23,10 +29,10 @@ package com.masteryj.core;
  */
 public final class ActionBudget {
 
-    /** At most one synthetic action per module per client tick. */
-    public static final int MAX_PER_TICK_PER_MODULE = 1;
-    /** Per-module sliding-second cap; equals the 20 CPS ceiling. */
-    public static final int MAX_PER_SECOND_PER_MODULE = 20;
+    /** At most two synthetic actions per module per client tick. */
+    public static final int MAX_PER_TICK_PER_MODULE = 2;
+    /** Per-module sliding-second cap; equals the 40 CPS ceiling. */
+    public static final int MAX_PER_SECOND_PER_MODULE = 40;
 
     private static final long WINDOW_NANOS = 1_000_000_000L;
     private static final long TICK_NANOS = 50_000_000L;
@@ -43,6 +49,7 @@ public final class ActionBudget {
     private final int[] recentCount = new int[MODULES];
     private final int[] recentHead = new int[MODULES];
     private final long[] lastTickBucket = new long[MODULES];
+    private final int[] tickUsed = new int[MODULES];       // synthetic actions used in the current tick bucket
     private final long[] dropped = new long[MODULES];
 
     // Diagnostic only: highest combined synthetic actions observed within one tick.
@@ -64,7 +71,11 @@ public final class ActionBudget {
     public boolean tryConsume(Module module, long nowNanos) {
         int m = module.ordinal();
         long bucket = Math.floorDiv(nowNanos, TICK_NANOS);
-        if (lastTickBucket[m] == bucket) {                        // per-tick cap: 1 / module
+        if (lastTickBucket[m] != bucket) {                        // entered a new tick: reset per-tick counter
+            lastTickBucket[m] = bucket;
+            tickUsed[m] = 0;
+        }
+        if (tickUsed[m] >= MAX_PER_TICK_PER_MODULE) {             // per-tick cap: 2 / module
             dropped[m]++;
             return false;
         }
@@ -72,7 +83,7 @@ public final class ActionBudget {
             dropped[m]++;
             return false;
         }
-        lastTickBucket[m] = bucket;
+        tickUsed[m]++;
         recent[m][recentHead[m]] = nowNanos;
         recentHead[m] = (recentHead[m] + 1) % MAX_PER_SECOND_PER_MODULE;
         if (recentCount[m] < MAX_PER_SECOND_PER_MODULE) {
@@ -109,6 +120,7 @@ public final class ActionBudget {
         recentCount[m] = 0;
         recentHead[m] = 0;
         lastTickBucket[m] = Long.MIN_VALUE;
+        tickUsed[m] = 0;
     }
 
     /** Total synthetic actions dropped for one module because a cap was hit (diagnostics). */

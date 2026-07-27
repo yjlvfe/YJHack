@@ -628,10 +628,10 @@ public final class ModGuiClient implements ClientModInitializer {
                this.dirty = false;
             }));
          y += YjTheme.ROW + 4;
-         this.addSlider(x, y, w, "Min CPS", 1, 20, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
+         this.addSlider(x, y, w, "Min CPS", 1, 40, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
          addHelp(x, y, w, YjTheme.CTRL_H, "Minimum clicks per second.");
          y += YjTheme.ROW + 2;
-         this.addSlider(x, y, w, "Max CPS", 1, 20, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
+         this.addSlider(x, y, w, "Max CPS", 1, 40, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
          addHelp(x, y, w, YjTheme.CTRL_H, "Maximum clicks per second.");
          addActionBar(this::reset);
       }
@@ -737,10 +737,10 @@ public final class ModGuiClient implements ClientModInitializer {
                this.dirty = false;
             }));
          y += YjTheme.ROW + 4;
-         this.addSlider(x, y, w, "Min CPS", 1, 20, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
+         this.addSlider(x, y, w, "Min CPS", 1, 40, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
          addHelp(x, y, w, YjTheme.CTRL_H, "Minimum blocks placed per second.");
          y += YjTheme.ROW + 2;
-         this.addSlider(x, y, w, "Max CPS", 1, 20, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
+         this.addSlider(x, y, w, "Max CPS", 1, 40, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
          addHelp(x, y, w, YjTheme.CTRL_H, "Maximum blocks placed per second.");
          addActionBar(this::reset);
       }

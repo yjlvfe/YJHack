@@ -36,16 +36,21 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoLeft");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
-    private static final int CURRENT_CONFIG_VERSION = 4;
+    private static final int CURRENT_CONFIG_VERSION = 5;
     /**
-     * CPS hard-ceiling. The scheduler emits at most one pulse per client tick and the
-     * client ticks at ~20 TPS, so ~20 CPS is the real executable rate — anything above
-     * would just be a displayed value the mod can never actually deliver. Also the GUI
-     * slider maximum. Kept in sync with {@link com.masteryj.core.ActionBudget}.
+     * CPS hard-ceiling. The phase-accumulator scheduler emits at most TWO pulses per client
+     * tick and the client ticks at ~20 TPS, so ~40 CPS is the real executable rate — anything
+     * above would just be a displayed value the mod can never actually deliver. Also the GUI
+     * slider maximum. Kept in sync with {@link com.masteryj.core.ActionBudget} and
+     * {@link com.masteryj.core.ClickScheduler#MAX_PULSES_PER_TICK}.
      */
-    private static final int MAX_SAFE_CPS = 20;
+    private static final int MAX_SAFE_CPS = 40;
+    /** Shipped defaults (v5). A config still on the legacy defaults is migrated up to these. */
+    private static final int DEFAULT_MIN_CPS = 30;
+    private static final int DEFAULT_MAX_CPS = 40;
+    private static final int LEGACY_DEFAULT_MIN_CPS = 8;
+    private static final int LEGACY_DEFAULT_MAX_CPS = 16;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
-    private static final long MS_TO_NANOS = 1_000_000L;
     private static final InputUtil.Key LEFT_MOUSE = InputUtil.Type.MOUSE.createFromCode(0);
 
     private final Random random = new Random();
@@ -55,8 +60,8 @@ public final class AutoLeftClient implements ClientModInitializer {
     public static boolean enabled = true;
     public static boolean weaponCheck = false;
     public static int toggleKeyCode = -1;
-    private int currentDelayMs = 0;
     private boolean leftSyntheticDown = false;
+    private boolean leftPhysicalWasDown = false;   // debug-only physical rising-edge tracking
     private long lastConfigCheckAtNanos = Long.MIN_VALUE;
     private FileTime lastKnownConfigWriteTime = null;
     private boolean toggleKeyWasDown = false;
@@ -71,6 +76,14 @@ public final class AutoLeftClient implements ClientModInitializer {
     private void tickLeftAutoClick(MinecraftClient client) {
         maybeReloadConfig();
         handleToggleKey(client);
+
+        if (DebugStats.ENABLED) {
+            boolean physicalDown = isMouseDown(client, 0);
+            if (physicalDown && !leftPhysicalWasDown) DebugStats.onAutoLeftPhysicalPress();
+            leftPhysicalWasDown = physicalDown;
+            DebugStats.setAutoLeftConfiguredCps(config == null ? 0 : config.minCps, config == null ? 0 : config.maxCps);
+            if (physicalDown && (!enabled || !isInActiveGameplay(client))) DebugStats.onAutoLeftGateRejected();
+        }
 
         if (!enabled || !isInActiveGameplay(client)) {
             resetState();
@@ -106,19 +119,22 @@ public final class AutoLeftClient implements ClientModInitializer {
             return;
         }
 
-        // One pulse per tick, NO catch-up. If the client stalled, the missed clicks are
-        // dropped and the next pulse is rescheduled from now — a lag spike can never be
-        // replayed as a burst. The shared ActionBudget is the final combined-rate guard.
-        if (leftScheduler.due(now)) {
+        // Tick-aware cadence: 0..2 pulses this tick, NO catch-up. A FIXED cps is added to the
+        // phase each tick (never a value derived from elapsed time), so a client stall is never
+        // replayed as a burst and 40 CPS reliably yields two pulses per tick despite jitter.
+        // The shared ActionBudget is the final combined-rate guard.
+        int pulses = leftScheduler.pulsesThisTick(pickCps());
+        int emitted = 0;
+        for (int i = 0; i < pulses; i++) {
             if (ActionBudget.INSTANCE.tryConsume(ActionBudget.Module.LEFT, now)) {
                 triggerLeftPulse();
                 DebugStats.onAutoLeftPulse();
+                emitted++;
             } else {
                 DebugStats.onAutoLeftBudgetRejected();
             }
-            scheduleNextDelay();
-            leftScheduler.rearm(now, (long) currentDelayMs * MS_TO_NANOS);
         }
+        if (DebugStats.ENABLED) DebugStats.onAutoLeftTickPulses(emitted);
 
         releaseLeftHold();
     }
@@ -148,23 +164,12 @@ public final class AutoLeftClient implements ClientModInitializer {
         ActionBudget.INSTANCE.reset(ActionBudget.Module.LEFT);
     }
 
-    /** Simple CPS: random integer between minCps and maxCps (inclusive). */
-    private void scheduleNextDelay() {
+    /** Random target CPS in [minCps, maxCps] for this tick — the phase-accumulator increment. */
+    private int pickCps() {
         int min = config.minCps;
         int max = config.maxCps;
-        int cps;
-        if (min >= max) {
-            cps = min;
-        } else {
-            cps = min + random.nextInt(max - min + 1);
-        }
-        currentDelayMs = cpsToDelay(cps);
-    }
-
-    private int cpsToDelay(int cps) {
-        int abs = Math.abs(cps);
-        if (abs == 0) return Integer.MAX_VALUE;
-        return Math.max(1, (int) Math.ceil(1000.0 / abs));
+        if (min >= max) return min;
+        return min + random.nextInt(max - min + 1);
     }
 
     private boolean isMouseDown(MinecraftClient client, int button) {
@@ -218,10 +223,16 @@ public final class AutoLeftClient implements ClientModInitializer {
         public boolean enabled = true;
         public boolean weaponCheck = false;
         public int toggleKeyCode = -1;
-        public int minCps = 8;
-        public int maxCps = 16;
+        public int minCps = DEFAULT_MIN_CPS;
+        public int maxCps = DEFAULT_MAX_CPS;
         public void normalize() {
             if (configVersion < CURRENT_CONFIG_VERSION) {
+                // One-time default bump: a config still on the shipped legacy defaults is moved
+                // to the new faster defaults; any hand-customised value is preserved untouched.
+                if (minCps == LEGACY_DEFAULT_MIN_CPS && maxCps == LEGACY_DEFAULT_MAX_CPS) {
+                    minCps = DEFAULT_MIN_CPS;
+                    maxCps = DEFAULT_MAX_CPS;
+                }
                 configVersion = CURRENT_CONFIG_VERSION;
             }
             // Clamp CPS to the conservative Release ceiling (MAX_SAFE_CPS) so a hand-edited

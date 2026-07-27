@@ -22,36 +22,36 @@ class ConfigNormalizationTest {
     // ---- Min CPS / Max CPS validation (AutoLeft + AutoRight) ----
 
     @Test
-    void autoLeftClampsCpsToTwentyAndFixesInversion() {
+    void autoLeftClampsCpsToFortyAndFixesInversion() {
         AutoLeftClient.Config c = new AutoLeftClient.Config();
-        c.minCps = 9999;   // absurd -> clamps to 20
+        c.minCps = 9999;   // absurd -> clamps to 40
         c.maxCps = -5;      // non-positive -> clamps to 1, then min>max is corrected by swap
         c.normalize();
         assertEquals(1, c.minCps, "after clamp+swap the lower bound is 1");
-        assertEquals(20, c.maxCps, "after clamp+swap the upper bound is the 20 CPS ceiling");
+        assertEquals(40, c.maxCps, "after clamp+swap the upper bound is the 40 CPS ceiling");
         assertTrue(c.minCps <= c.maxCps, "min must never exceed max");
     }
 
     @Test
-    void autoRightClampsCpsToTwenty() {
+    void autoRightClampsCpsToForty() {
         AutoRightClient.Config c = new AutoRightClient.Config();
         c.minCps = 0;
         c.maxCps = 500_000;
         c.normalize();
         assertEquals(1, c.minCps);
-        assertEquals(20, c.maxCps, "absurd CPS clamps down to the 20 CPS ceiling");
+        assertEquals(40, c.maxCps, "absurd CPS clamps down to the 40 CPS ceiling");
     }
 
     @Test
-    void cpsBoundaryValuesClampAtTwenty() {
-        // The exact contract the spec requires: 1 stays 1, 20 stays 20, and every
-        // unexecutable value (21 / 30 / 40 / 1000) is pulled down to the 20 ceiling.
+    void cpsBoundaryValuesClampAtForty() {
+        // The exact contract the spec requires: 1 stays 1, 20/40 stay put, and every
+        // unexecutable value (41 / 100 / 1000) is pulled down to the 40 ceiling.
         assertEquals(1, normalizedMax(1),  "1 CPS is preserved");
         assertEquals(20, normalizedMax(20), "20 CPS is preserved");
-        assertEquals(20, normalizedMax(21), "21 -> 20");
-        assertEquals(20, normalizedMax(30), "30 -> 20");
-        assertEquals(20, normalizedMax(40), "40 -> 20");
-        assertEquals(20, normalizedMax(1000), "1000 -> 20");
+        assertEquals(40, normalizedMax(40), "40 CPS is preserved");
+        assertEquals(40, normalizedMax(41), "41 -> 40");
+        assertEquals(40, normalizedMax(100), "100 -> 40");
+        assertEquals(40, normalizedMax(1000), "1000 -> 40");
     }
 
     @Test
@@ -77,7 +77,7 @@ class ConfigNormalizationTest {
     @Test
     void minGreaterThanMaxIsSwapped() {
         AutoRightClient.Config c = new AutoRightClient.Config();
-        c.minCps = 18;   // both in range (<=20) but inverted
+        c.minCps = 18;   // both in range (<=40) but inverted
         c.maxCps = 7;
         c.normalize();
         assertEquals(7, c.minCps, "min>max is corrected (swapped), not left inverted");
@@ -91,8 +91,8 @@ class ConfigNormalizationTest {
         left.minCps = 100;
         left.maxCps = 1000;
         left.normalize();
-        assertEquals(20, left.minCps);
-        assertEquals(20, left.maxCps);
+        assertEquals(40, left.minCps);
+        assertEquals(40, left.maxCps);
     }
 
     @Test
@@ -100,22 +100,72 @@ class ConfigNormalizationTest {
         AutoRightClient.Config c = new AutoRightClient.Config();
         c.configVersion = 1; // simulate an old file
         c.normalize();
-        assertEquals(4, c.configVersion, "config version is upgraded, not reset");
-        assertTrue(c.minCps >= 1 && c.minCps <= 20);
-        assertTrue(c.maxCps >= 1 && c.maxCps <= 20);
+        assertEquals(5, c.configVersion, "config version is upgraded, not reset");
+        assertTrue(c.minCps >= 1 && c.minCps <= 40);
+        assertTrue(c.maxCps >= 1 && c.maxCps <= 40);
     }
 
     @Test
     void defaultCpsValuesSurviveNormalize() {
-        // The shipped defaults must sit inside the ceiling untouched (no behaviour change).
+        // The shipped v5 defaults must sit inside the ceiling untouched (no clamp change).
         AutoLeftClient.Config left = new AutoLeftClient.Config();
         left.normalize();
-        assertEquals(8, left.minCps);
-        assertEquals(16, left.maxCps);
+        assertEquals(30, left.minCps);
+        assertEquals(40, left.maxCps);
         AutoRightClient.Config right = new AutoRightClient.Config();
         right.normalize();
-        assertEquals(14, right.minCps);
-        assertEquals(20, right.maxCps, "AutoRight default max now sits on the 20 ceiling");
+        assertEquals(30, right.minCps);
+        assertEquals(40, right.maxCps, "AutoRight default max now sits on the 40 ceiling");
+    }
+
+    // ---- v4 -> v5 default bump migration (preserve customised values) ----
+
+    @Test
+    void autoLeftLegacyDefaultsMigrateToFasterDefaults() {
+        AutoLeftClient.Config c = new AutoLeftClient.Config();
+        c.configVersion = 4;   // a pre-v5 file
+        c.minCps = 8;          // exactly the shipped legacy defaults
+        c.maxCps = 16;
+        c.normalize();
+        assertEquals(5, c.configVersion, "version is bumped");
+        assertEquals(30, c.minCps, "a user still on the legacy 8/16 defaults is moved to 30");
+        assertEquals(40, c.maxCps, "...and 40");
+    }
+
+    @Test
+    void autoLeftCustomisedValuesSurviveMigration() {
+        AutoLeftClient.Config c = new AutoLeftClient.Config();
+        c.configVersion = 4;
+        c.minCps = 10;         // hand-customised, NOT the legacy defaults
+        c.maxCps = 18;
+        c.normalize();
+        assertEquals(5, c.configVersion, "version is bumped");
+        assertEquals(10, c.minCps, "a customised min is preserved, never clobbered by the bump");
+        assertEquals(18, c.maxCps, "a customised max is preserved");
+    }
+
+    @Test
+    void autoRightLegacyDefaultsMigrateToFasterDefaults() {
+        AutoRightClient.Config c = new AutoRightClient.Config();
+        c.configVersion = 4;
+        c.minCps = 14;         // the shipped legacy AutoRight defaults
+        c.maxCps = 20;
+        c.normalize();
+        assertEquals(5, c.configVersion);
+        assertEquals(30, c.minCps);
+        assertEquals(40, c.maxCps);
+    }
+
+    @Test
+    void autoRightCustomisedValuesSurviveMigration() {
+        AutoRightClient.Config c = new AutoRightClient.Config();
+        c.configVersion = 4;
+        c.minCps = 12;         // customised, NOT the legacy pair
+        c.maxCps = 19;
+        c.normalize();
+        assertEquals(5, c.configVersion);
+        assertEquals(12, c.minCps, "customised min preserved");
+        assertEquals(19, c.maxCps, "customised max preserved");
     }
 
     // ---- AimAssist float sanitisation ----

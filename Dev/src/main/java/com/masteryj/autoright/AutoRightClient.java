@@ -32,18 +32,23 @@ public final class AutoRightClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoRight");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoright.json");
-    private static final int CURRENT_CONFIG_VERSION = 4;
+    private static final int CURRENT_CONFIG_VERSION = 5;
     /**
-     * CPS hard-ceiling. The scheduler emits at most one pulse per client tick and the
-     * client ticks at ~20 TPS, so ~20 CPS is the real executable rate — anything above
-     * would just be a displayed value the mod can never actually deliver. Also the GUI
-     * slider maximum. Kept in sync with {@link com.masteryj.core.ActionBudget}.
+     * CPS hard-ceiling. The phase-accumulator scheduler emits at most TWO pulses per client
+     * tick and the client ticks at ~20 TPS, so ~40 CPS is the real executable rate — anything
+     * above would just be a displayed value the mod can never actually deliver. Also the GUI
+     * slider maximum. Kept in sync with {@link com.masteryj.core.ActionBudget} and
+     * {@link com.masteryj.core.ClickScheduler#MAX_PULSES_PER_TICK}.
      */
-    private static final int MAX_SAFE_CPS = 20;
+    private static final int MAX_SAFE_CPS = 40;
+    /** Shipped defaults (v5). A config still on the legacy defaults is migrated up to these. */
+    private static final int DEFAULT_MIN_CPS = 30;
+    private static final int DEFAULT_MAX_CPS = 40;
+    private static final int LEGACY_DEFAULT_MIN_CPS = 14;
+    private static final int LEGACY_DEFAULT_MAX_CPS = 20;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
     private static final long RIGHT_BLOCK_HOLD_DELAY_NANOS = 10_000_000L;
     private static final long QUICK_TAP_THRESHOLD_NANOS = 10_000_000L;
-    private static final long MS_TO_NANOS = 1_000_000L;
     private static final InputUtil.Key RIGHT_MOUSE = InputUtil.Type.MOUSE.createFromCode(1);
 
     private final Random random = new Random();
@@ -55,7 +60,6 @@ public final class AutoRightClient implements ClientModInitializer {
     public static int toggleKeyCode = -1;
     private boolean rightWasDown = false;
     private long rightPressedAtNanos = 0L;
-    private int rightCurrentDelayMs = 0;
     private boolean blockBurstStarted = false;
     private long lastConfigCheckAtNanos = Long.MIN_VALUE;
     private FileTime lastKnownConfigWriteTime = null;
@@ -71,6 +75,11 @@ public final class AutoRightClient implements ClientModInitializer {
     private void tickRightAutoClick(MinecraftClient client) {
         maybeReloadConfig();
         handleToggleKey(client);
+
+        if (DebugStats.ENABLED) {
+            DebugStats.setAutoRightConfiguredCps(config == null ? 0 : config.minCps, config == null ? 0 : config.maxCps);
+            if ((!enabled || !isInActiveGameplay(client)) && isMouseDown(client, 1)) DebugStats.onAutoRightGateRejected();
+        }
 
         // Not playing (disabled, GUI open, no world, unfocused, dead, spectator):
         // release any synthetic press and require a fresh press before acting again.
@@ -92,6 +101,7 @@ public final class AutoRightClient implements ClientModInitializer {
             rightPressedAtNanos = now;
             blockBurstStarted = false;
             rightScheduler.armImmediate();
+            DebugStats.onAutoRightPhysicalPress();
         }
 
         switch (kind) {
@@ -146,31 +156,32 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
+        // First synthetic placement is prompt, then the tick-aware cadence takes over.
         if (!blockBurstStarted) {
             blockBurstStarted = true;
-            emitBlockPulse(now);
-            scheduleNextRightDelay();
-            rightScheduler.rearm(now, (long) rightCurrentDelayMs * MS_TO_NANOS);
-            return;
+            rightScheduler.armImmediate();
         }
 
-        // One pulse per tick, NO catch-up: a late tick drops the missed placements and
-        // reschedules from now instead of bursting a backlog of block-place packets.
-        if (rightScheduler.due(now)) {
-            emitBlockPulse(now);
-            scheduleNextRightDelay();
-            rightScheduler.rearm(now, (long) rightCurrentDelayMs * MS_TO_NANOS);
+        // Tick-aware cadence: 0..2 placements this tick, NO catch-up. A FIXED cps is added to
+        // the phase each tick (never elapsed-time derived), so a stall drops missed placements
+        // instead of bursting a backlog of block-place packets.
+        int pulses = rightScheduler.pulsesThisTick(pickRightCps());
+        int emitted = 0;
+        for (int i = 0; i < pulses; i++) {
+            if (emitBlockPulse(now)) emitted++;
         }
+        if (DebugStats.ENABLED) DebugStats.onAutoRightTickPulses(emitted);
     }
 
-    /** Emit one synthetic block-place click if the shared budget allows; else drop it. */
-    private void emitBlockPulse(long now) {
+    /** Emit one synthetic block-place click if the shared budget allows; else drop it. Returns true if emitted. */
+    private boolean emitBlockPulse(long now) {
         if (ActionBudget.INSTANCE.tryConsume(ActionBudget.Module.RIGHT, now)) {
             clickMouseKey(RIGHT_MOUSE);
             DebugStats.onAutoRightBlockPulse();
-        } else {
-            DebugStats.onAutoRightBudgetRejected();
+            return true;
         }
+        DebugStats.onAutoRightBudgetRejected();
+        return false;
     }
 
     /** Leave vanilla input untouched (no synthetic clicks, no suppression). */
@@ -195,23 +206,12 @@ public final class AutoRightClient implements ClientModInitializer {
         blockBurstStarted = false;
     }
 
-    /** Simple CPS: random integer between minCps and maxCps (inclusive). */
-    private void scheduleNextRightDelay() {
+    /** Random target CPS in [minCps, maxCps] for this tick — the phase-accumulator increment. */
+    private int pickRightCps() {
         int min = config.minCps;
         int max = config.maxCps;
-        int cps;
-        if (min >= max) {
-            cps = min;
-        } else {
-            cps = min + random.nextInt(max - min + 1);
-        }
-        rightCurrentDelayMs = cpsToDelay(cps);
-    }
-
-    private int cpsToDelay(int cps) {
-        int abs = Math.abs(cps);
-        if (abs == 0) return Integer.MAX_VALUE;
-        return Math.max(1, (int) Math.ceil(1000.0 / abs));
+        if (min >= max) return min;
+        return min + random.nextInt(max - min + 1);
     }
 
     private boolean isMouseDown(MinecraftClient client, int button) {
@@ -260,10 +260,16 @@ public final class AutoRightClient implements ClientModInitializer {
         public boolean enabled = true;
         public boolean blockMode = true;
         public int toggleKeyCode = -1;
-        public int minCps = 14;
-        public int maxCps = 20;   // was 28; clamped into the 20-CPS ceiling, min kept at 14
+        public int minCps = DEFAULT_MIN_CPS;
+        public int maxCps = DEFAULT_MAX_CPS;
         public void normalize() {
             if (configVersion < CURRENT_CONFIG_VERSION) {
+                // One-time default bump: a config still on the shipped legacy defaults is moved
+                // to the new faster defaults; any hand-customised value is preserved untouched.
+                if (minCps == LEGACY_DEFAULT_MIN_CPS && maxCps == LEGACY_DEFAULT_MAX_CPS) {
+                    minCps = DEFAULT_MIN_CPS;
+                    maxCps = DEFAULT_MAX_CPS;
+                }
                 configVersion = CURRENT_CONFIG_VERSION;
             }
             // Clamp CPS to the conservative Release ceiling (MAX_SAFE_CPS) so a hand-edited

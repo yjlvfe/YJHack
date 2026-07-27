@@ -17,6 +17,11 @@ import org.slf4j.LoggerFactory;
  * {@link System#nanoTime()} clock) — never per-tick, per-click or per-packet — and records no
  * player data and no packet contents. A dropped pulse is, by construction (no catch-up), exactly
  * a budget rejection, so "budget rejected" doubles as the backlog-dropped count.
+ *
+ * <p>Per module (AutoLeft / AutoRight Block) the 10 s line reports: configured CPS range,
+ * physical presses, requested / emitted / budget-rejected / gameplay-gate-rejected actions, and
+ * the max pulses observed in a single tick — which at a healthy 40&nbsp;CPS should read 2 with
+ * zero budget rejections.
  */
 public final class DebugStats {
 
@@ -27,11 +32,25 @@ public final class DebugStats {
 
     private static final long LOG_INTERVAL_NANOS = 10_000_000_000L;
 
-    // Synthetic-action / state-change counters (per 10 s window).
+    // --- AutoLeft synthetic-action counters (per 10 s window) ---
+    private static long autoLeftPhysicalPresses;
     private static long autoLeftEmitted;
     private static long autoLeftBudgetRejected;
+    private static long autoLeftGateRejected;
+    private static int autoLeftMaxPulsesPerTick;
+    private static int autoLeftCfgMin;
+    private static int autoLeftCfgMax;
+
+    // --- AutoRight Block synthetic-action counters (per 10 s window) ---
+    private static long autoRightPhysicalPresses;
     private static long autoRightBlockEmitted;
     private static long autoRightBudgetRejected;
+    private static long autoRightGateRejected;
+    private static int autoRightMaxPulsesPerTick;
+    private static int autoRightCfgMin;
+    private static int autoRightCfgMax;
+
+    // --- Other module state-change counters (per 10 s window) ---
     private static long singlePressSuppressions;
     private static long sneakTransitions;
     private static long slotChanges;
@@ -43,12 +62,39 @@ public final class DebugStats {
     private DebugStats() {
     }
 
+    // --- AutoLeft ---
+
+    public static void onAutoLeftPhysicalPress() {
+        if (ENABLED) autoLeftPhysicalPresses++;
+    }
+
     public static void onAutoLeftPulse() {
         if (ENABLED) autoLeftEmitted++;
     }
 
     public static void onAutoLeftBudgetRejected() {
         if (ENABLED) autoLeftBudgetRejected++;
+    }
+
+    public static void onAutoLeftGateRejected() {
+        if (ENABLED) autoLeftGateRejected++;
+    }
+
+    public static void onAutoLeftTickPulses(int pulses) {
+        if (ENABLED && pulses > autoLeftMaxPulsesPerTick) autoLeftMaxPulsesPerTick = pulses;
+    }
+
+    public static void setAutoLeftConfiguredCps(int min, int max) {
+        if (ENABLED) {
+            autoLeftCfgMin = min;
+            autoLeftCfgMax = max;
+        }
+    }
+
+    // --- AutoRight Block ---
+
+    public static void onAutoRightPhysicalPress() {
+        if (ENABLED) autoRightPhysicalPresses++;
     }
 
     public static void onAutoRightBlockPulse() {
@@ -58,6 +104,23 @@ public final class DebugStats {
     public static void onAutoRightBudgetRejected() {
         if (ENABLED) autoRightBudgetRejected++;
     }
+
+    public static void onAutoRightGateRejected() {
+        if (ENABLED) autoRightGateRejected++;
+    }
+
+    public static void onAutoRightTickPulses(int pulses) {
+        if (ENABLED && pulses > autoRightMaxPulsesPerTick) autoRightMaxPulsesPerTick = pulses;
+    }
+
+    public static void setAutoRightConfiguredCps(int min, int max) {
+        if (ENABLED) {
+            autoRightCfgMin = min;
+            autoRightCfgMax = max;
+        }
+    }
+
+    // --- Other modules ---
 
     public static void onSinglePressSuppressed() {
         if (ENABLED) singlePressSuppressions++;
@@ -109,9 +172,15 @@ public final class DebugStats {
         }
         lastLogNanos = nowNanos;
         // requested == emitted + budgetRejected (no separate backlog exists without catch-up).
-        LOGGER.info("[yjhack 10s] AutoLeft req/emit/budgetRej={}/{}/{} AutoRight req/emit/budgetRej={}/{}/{} spSuppress={} sneak={} slot={} maxActions/tick={}",
+        LOGGER.info("[yjhack 10s] AutoLeft cps={}-{} presses={} req={} emit={} budgetRej={} gateRej={} maxPulses/tick={}",
+                autoLeftCfgMin, autoLeftCfgMax, autoLeftPhysicalPresses,
                 autoLeftEmitted + autoLeftBudgetRejected, autoLeftEmitted, autoLeftBudgetRejected,
+                autoLeftGateRejected, autoLeftMaxPulsesPerTick);
+        LOGGER.info("[yjhack 10s] AutoRight cps={}-{} presses={} req={} emit={} budgetRej={} gateRej={} maxPulses/tick={}",
+                autoRightCfgMin, autoRightCfgMax, autoRightPhysicalPresses,
                 autoRightBlockEmitted + autoRightBudgetRejected, autoRightBlockEmitted, autoRightBudgetRejected,
+                autoRightGateRejected, autoRightMaxPulsesPerTick);
+        LOGGER.info("[yjhack 10s] misc spSuppress={} sneak={} slot={} globalMaxActions/tick={}",
                 singlePressSuppressions, sneakTransitions, slotChanges, ActionBudget.INSTANCE.maxInOneTick());
         for (Map.Entry<String, long[]> e : TICKS.entrySet()) {
             long[] s = e.getValue();
@@ -121,7 +190,9 @@ public final class DebugStats {
             LOGGER.info("[yjhack 10s] {} tick avg={}us max={}us >50ms={} >100ms={}",
                     e.getKey(), s[1] / s[0] / 1000L, s[2] / 1000L, s[3], s[4]);
         }
-        autoLeftEmitted = autoLeftBudgetRejected = autoRightBlockEmitted = autoRightBudgetRejected = 0;
+        autoLeftPhysicalPresses = autoLeftEmitted = autoLeftBudgetRejected = autoLeftGateRejected = 0;
+        autoRightPhysicalPresses = autoRightBlockEmitted = autoRightBudgetRejected = autoRightGateRejected = 0;
+        autoLeftMaxPulsesPerTick = autoRightMaxPulsesPerTick = 0;
         singlePressSuppressions = sneakTransitions = slotChanges = 0;
         TICKS.clear();
     }

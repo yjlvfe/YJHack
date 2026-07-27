@@ -1,139 +1,130 @@
 package com.masteryj.core;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
 /**
- * Locks the anti-burst contract of {@link ClickScheduler}: at most one pulse per tick and
- * NO catch-up — a client-thread stall must never be replayed as a burst of synthetic clicks.
+ * Locks the cadence + anti-burst contract of the tick-aware {@link ClickScheduler}:
+ * <ul>
+ *   <li>exact rates from 1..40 CPS over ten simulated seconds (200 ticks at 20 TPS);</li>
+ *   <li>at most TWO pulses per tick, ever;</li>
+ *   <li>NO catch-up — a client-thread stall (fewer tick calls) is never replayed as a burst;</li>
+ *   <li>an immediate first pulse on a fresh press, even at low CPS, with no third pulse.</li>
+ * </ul>
+ * The accumulator is wall-time agnostic, so jitter in tick spacing cannot change these counts.
  */
 class ClickSchedulerTest {
 
-    /** Model of a module: check due() at most once per tick, emit if due, rearm from now. */
-    private static int emittedOverTicks(long[] tickTimesMs, int delayMs) {
+    /** Total pulses a fresh (non-primed) scheduler emits over {@code ticks} ticks at a fixed cps. */
+    private static int emittedOverTicks(int ticks, int cps) {
         ClickScheduler s = new ClickScheduler();
-        int emitted = 0;
-        for (long now : tickTimesMs) {
-            if (s.due(now)) {
-                emitted++;
-                s.rearm(now, delayMs);
-            }
+        int total = 0;
+        for (int i = 0; i < ticks; i++) {
+            total += s.pulsesThisTick(cps);
         }
-        return emitted;
+        return total;
     }
 
     @Test
-    void freshSchedulerFiresImmediately() {
-        assertTrue(new ClickScheduler().due(0L));
+    void steadyCadenceMatchesConfiguredCpsOverTenSeconds() {
+        // 200 ticks == 10 s at 20 TPS. Pure phase (no immediate priming) yields the round rate.
+        assertEquals(10, emittedOverTicks(200, 1), "1 CPS -> 10 pulses in 10s");
+        assertEquals(50, emittedOverTicks(200, 5), "5 CPS -> 50 pulses in 10s");
+        assertEquals(100, emittedOverTicks(200, 10), "10 CPS -> 100 pulses in 10s");
+        assertEquals(200, emittedOverTicks(200, 20), "20 CPS -> one pulse every tick");
+        assertEquals(250, emittedOverTicks(200, 25), "25 CPS -> 250 pulses in 10s");
+        assertEquals(300, emittedOverTicks(200, 30), "30 CPS -> 300 pulses in 10s");
+        assertEquals(350, emittedOverTicks(200, 35), "35 CPS -> 350 pulses in 10s");
+        assertEquals(400, emittedOverTicks(200, 40), "40 CPS -> two pulses every tick");
     }
 
     @Test
-    void lagOf500msProducesExactlyOnePulse() {
+    void fortyCpsIsTwoPulsesEveryTick() {
         ClickScheduler s = new ClickScheduler();
-        s.rearm(0L, 25);                 // ~40 CPS schedule, next due at 25ms
-        long resume = 500L;              // 500ms stall
-        int pulses = 0;
-        if (s.due(resume)) { pulses++; s.rearm(resume, 25); }
-        assertEquals(1, pulses, "a 500ms stall yields ONE pulse, not a backlog burst");
-        assertFalse(s.due(resume), "rescheduled from now — cannot fire again this tick");
-    }
-
-    @Test
-    void lagOfTwoSecondsProducesExactlyOnePulse() {
-        ClickScheduler s = new ClickScheduler();
-        s.rearm(0L, 50);                 // 20 CPS
-        long resume = 2000L;             // 2s stall
-        int pulses = 0;
-        if (s.due(resume)) { pulses++; s.rearm(resume, 50); }
-        assertEquals(1, pulses, "a 2s stall still yields exactly ONE pulse");
-        assertFalse(s.due(resume));
-    }
-
-    @Test
-    void atMostOnePulsePerTickEvenIfPolledRepeatedly() {
-        ClickScheduler s = new ClickScheduler();
-        long now = 5000L;
-        int pulses = 0;
-        for (int i = 0; i < 40; i++) {   // hammer due() 40x within a single tick
-            if (s.due(now)) { pulses++; s.rearm(now, 25); }
+        for (int i = 0; i < 20; i++) {
+            assertEquals(2, s.pulsesThisTick(40), "40 CPS emits exactly two pulses every normal tick");
         }
-        assertEquals(1, pulses, "one tick can emit at most one pulse");
     }
 
     @Test
-    void noBacklogReplayAcrossAOneSecondGap() {
-        // 20 CPS. Ten normal ticks, a 1000ms gap, then three more ticks.
-        // Without catch-up the gap contributes ONE pulse, never ~20.
-        long[] ticks = {0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 1450, 1500, 1550};
-        int pulses = emittedOverTicks(ticks, 50);
-        assertTrue(pulses <= ticks.length, "never more pulses than ticks — no backlog replay");
-        assertTrue(pulses >= 10, "normal cadence still produces its pulses");
-    }
-
-    @Test
-    void clearCancelsPendingThenReArmsImmediate() {
+    void thirtyCpsAlternatesOneAndTwo() {
         ClickScheduler s = new ClickScheduler();
-        s.rearm(1000L, 50);              // pending pulse queued at 1050
-        s.clear();                        // GUI open / focus loss / world null / disable
-        assertTrue(s.due(1000L), "after a reset the next physical press fires immediately");
-    }
-
-    @Test
-    void lagOfOneSecondProducesExactlyOnePulse() {
-        ClickScheduler s = new ClickScheduler();
-        s.rearm(0L, 50);                 // 20 CPS
-        long resume = 1000L;             // 1s stall
-        int pulses = 0;
-        if (s.due(resume)) { pulses++; s.rearm(resume, 50); }
-        assertEquals(1, pulses, "a 1s stall yields exactly ONE pulse, not ~20");
-        assertFalse(s.due(resume));
-    }
-
-    /** 200 ticks == 10 s at 20 TPS: times 0,50,…,9950 ms. */
-    private static long[] tenSecondsOfTicks() {
-        long[] t = new long[200];
-        for (int i = 0; i < t.length; i++) {
-            t[i] = i * 50L;
+        int[] seq = new int[6];
+        for (int i = 0; i < seq.length; i++) {
+            seq[i] = s.pulsesThisTick(30);
         }
-        return t;
+        // 30 CPS = 1.5 pulses/tick: a steady 1,2,1,2,... never a burst.
+        assertArrayEquals(new int[] {1, 2, 1, 2, 1, 2}, seq);
     }
 
     @Test
-    void cadenceMatchesConfiguredCpsOverTenSeconds() {
-        long[] ticks = tenSecondsOfTicks();
-        // delay = ceil(1000/cps); one pulse per tick is the hard ceiling (20 CPS).
-        assertEquals(10, emittedOverTicks(ticks, 1000), "1 CPS -> ~10 pulses in 10s");
-        assertEquals(50, emittedOverTicks(ticks, 200), "5 CPS -> ~50 pulses in 10s");
-        assertEquals(100, emittedOverTicks(ticks, 100), "10 CPS -> ~100 pulses in 10s");
-        assertEquals(200, emittedOverTicks(ticks, 50), "20 CPS -> one pulse every tick");
-    }
-
-    @Test
-    void changingCpsDoesNotCompensateForThePast() {
-        // Fast schedule, a long stall, then resume at a slower CPS: the stall must still
-        // contribute exactly ONE pulse — the past is never replayed to "catch up".
+    void neverMoreThanTwoPulsesPerTick() {
         ClickScheduler s = new ClickScheduler();
-        s.rearm(0L, 50);                 // 20 CPS
-        long resume = 5000L;             // 5s stall
-        int pulses = 0;
-        if (s.due(resume)) { pulses++; s.rearm(resume, 200); }   // switched to 5 CPS
-        assertEquals(1, pulses, "one pulse for the whole stall, regardless of the new CPS");
-        assertFalse(s.due(resume), "rescheduled from now at the new rate — no backlog");
+        s.armImmediate();
+        assertTrue(s.pulsesThisTick(40) <= ClickScheduler.MAX_PULSES_PER_TICK,
+                "immediate + 40 CPS still caps at two — no third pulse");
+        // An absurd hand-fed rate is still clamped to the two-pulse ceiling.
+        assertTrue(new ClickScheduler().pulsesThisTick(1000) <= ClickScheduler.MAX_PULSES_PER_TICK);
+    }
+
+    @Test
+    void freshPressFiresImmediatelyEvenAtOneCps() {
+        ClickScheduler s = new ClickScheduler();
+        s.armImmediate();
+        assertEquals(1, s.pulsesThisTick(1), "a fresh press fires one pulse immediately even at 1 CPS");
+    }
+
+    @Test
+    void immediateDoesNotAddAThirdPulseAtFortyCps() {
+        ClickScheduler s = new ClickScheduler();
+        s.armImmediate();
+        assertEquals(2, s.pulsesThisTick(40), "immediate coincides with the natural two, never a third");
+    }
+
+    @Test
+    void aStallIsNeverCompensatedAsABurst() {
+        // Run ten normal 40 CPS ticks (two each), then the tick loop "stalls" for two seconds:
+        // that simply means the next tick is a single call. It must emit at most two pulses —
+        // the ~80 missed pulses are gone, never replayed.
+        ClickScheduler s = new ClickScheduler();
+        for (int i = 0; i < 10; i++) {
+            s.pulsesThisTick(40);
+        }
+        assertTrue(s.pulsesThisTick(40) <= ClickScheduler.MAX_PULSES_PER_TICK,
+                "a stall (fewer tick calls) is never replayed as a backlog burst");
+    }
+
+    @Test
+    void jitterDoesNotReduceTheRate() {
+        // The accumulator ignores wall-time: whether ticks land at 48, 50 or 52 ms, each tick
+        // contributes exactly `cps`, so 40 CPS never sags toward 20. Twenty ticks -> 40 pulses.
+        ClickScheduler s = new ClickScheduler();
+        int total = 0;
+        for (int i = 0; i < 20; i++) {
+            total += s.pulsesThisTick(40);
+        }
+        assertEquals(40, total, "tick jitter cannot drop the 40 CPS rate");
+    }
+
+    @Test
+    void clearReprimesForAnImmediatePulse() {
+        ClickScheduler s = new ClickScheduler();
+        s.pulsesThisTick(30);   // accumulate some phase
+        s.clear();              // GUI open / focus loss / world null / disable / mouse up
+        assertEquals(1, s.pulsesThisTick(1), "after clear the next physical press fires immediately");
     }
 
     @Test
     void disableThenEnableDoesNotReplayMissedPulses() {
         ClickScheduler s = new ClickScheduler();
-        s.rearm(0L, 50);
-        s.clear();                        // disable
-        s.armImmediate();                 // re-enable: fresh press
-        long now = 10_000L;
-        int pulses = 0;
-        if (s.due(now)) { pulses++; s.rearm(now, 50); }
-        assertEquals(1, pulses, "re-enabling emits ONE fresh pulse, never a backlog of missed ones");
-        assertFalse(s.due(now));
+        for (int i = 0; i < 10; i++) {
+            s.pulsesThisTick(40);
+        }
+        s.clear();              // disable
+        s.armImmediate();       // re-enable: fresh press
+        assertEquals(2, s.pulsesThisTick(40), "re-enabling at 40 CPS emits its normal two, never a backlog");
     }
 }
