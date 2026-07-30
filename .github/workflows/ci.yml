@@ -41,7 +41,7 @@ jobs:
           if-no-files-found: error
 
   publish_release:
-    if: github.event_name == 'pull_request' && github.head_ref == 'release/publish-v1.0.2-aimfix-20260730'
+    if: github.event_name == 'pull_request' && github.head_ref == 'release/publish-v1.0.3-reset-defaults-20260730'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -71,7 +71,7 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v1.0.2-aimfix-20260730
+          RELEASE_TAG: v1.0.3-reset-defaults-20260730
           RELEASE_TARGET: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
@@ -85,6 +85,6 @@ jobs:
               YJHack-1.21.5.jar \
               YJHack-1.21.5.jar.sha256 \
               --target "$RELEASE_TARGET" \
-              --title "YJHack 1.21.5 — AimAssist Fix" \
-              --notes "Verified build for Minecraft 1.21.5. Fixes the AimAssist regression where looking at ordinary terrain immediately cancelled target acquisition. AimAssist now distinguishes normal terrain under the crosshair from deliberate continuous block mining using a short same-block intent delay, while retaining fresh line-of-sight, FOV, focus, release, and world-reset protections. Built with Java 21 and Gradle 8.14.4 after clean tests and compilation."
+              --title "YJHack 1.21.5 — Balanced Reset Defaults" \
+              --notes "Verified build for Minecraft 1.21.5. Reset and fresh-config defaults are now clean and disabled by default: AutoLeft uses weapon gating with 8–10 CPS, AutoRight uses 8–10 CPS with block mode available, NinjaBridge disables automatic slot switching, AimAssist uses balanced 0.28 speed / 0.45 smoothness / 70 FOV, and Tracker uses a 48-block range with team filtering. Includes the previous AimAssist terrain fix and all hardening changes. Built with Java 21 and Gradle 8.14.4 after the complete automated test suite."
           fi
