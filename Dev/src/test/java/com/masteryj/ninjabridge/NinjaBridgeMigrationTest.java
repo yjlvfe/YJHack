@@ -1,7 +1,6 @@
 package com.masteryj.ninjabridge;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
@@ -17,11 +16,11 @@ class NinjaBridgeMigrationTest {
     }
 
     @Test
-    void missingLegacyFieldReceivesSafeDefault() {
+    void missingLegacyFieldDefaultsToNoAutomaticSlotSwitch() {
         NinjaBridgeClient.Config config = new NinjaBridgeClient.Config();
         config.configVersion = 5;
         config.autoSwitch = false; // Gson's absent primitive-field value
         config.normalize(false);
-        assertTrue(config.autoSwitch);
+        assertFalse(config.autoSwitch);
     }
 }

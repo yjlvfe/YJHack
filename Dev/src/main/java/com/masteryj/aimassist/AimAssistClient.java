@@ -37,7 +37,7 @@ public final class AimAssistClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AimAssist");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
-    private static final int CURRENT_CONFIG_VERSION = 6;
+    private static final int CURRENT_CONFIG_VERSION = 7;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
     private static final long MINING_INTENT_DELAY_NANOS = 450_000_000L;
     private static final double ACQUIRE_DISTANCE_SQUARED = 20.25D;
@@ -64,8 +64,8 @@ public final class AimAssistClient implements ClientModInitializer {
     public static Config config;
     public static boolean enabled = false;
     public static int toggleKeyCode = -1;
-    public static float speed = 0.24F;
-    public static float smoothness = 0.35F;
+    public static float speed = 0.28F;
+    public static float smoothness = 0.45F;
     public static float fov = 70.0F;
 
     @Override
@@ -419,14 +419,14 @@ public final class AimAssistClient implements ClientModInitializer {
         public int configVersion = CURRENT_CONFIG_VERSION;
         public boolean enabled = false;
         public int toggleKeyCode = -1;
-        public float speed = 0.24F;
-        public float smoothness = 0.35F;
+        public float speed = 0.28F;
+        public float smoothness = 0.45F;
         public float fov = 70.0F;
 
         public void normalize() {
             if (configVersion < CURRENT_CONFIG_VERSION) configVersion = CURRENT_CONFIG_VERSION;
-            speed = sanitize(speed, 0.24F, 0.01F, 1.0F);
-            smoothness = sanitize(smoothness, 0.35F, 0.0F, 1.0F);
+            speed = sanitize(speed, 0.28F, 0.01F, 1.0F);
+            smoothness = sanitize(smoothness, 0.45F, 0.0F, 1.0F);
             fov = sanitize(fov, 70.0F, 10.0F, 180.0F);
             toggleKeyCode = normalizeToggleKeyCode(toggleKeyCode);
         }

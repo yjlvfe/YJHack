@@ -40,7 +40,7 @@ public final class TrackerClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-Tracker");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("tracker.json");
-    private static final int CURRENT_CONFIG_VERSION = 6;
+    private static final int CURRENT_CONFIG_VERSION = 7;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
 
     private final VertexConsumerProvider.Immediate wallHitboxConsumers =
@@ -48,11 +48,11 @@ public final class TrackerClient implements ClientModInitializer {
     private final List<PlayerEntity> trackedSnapshot = new ArrayList<>();
 
     public static Config config;
-    public static boolean enabled = true;
+    public static boolean enabled = false;
     public static int toggleKeyCode = -1;
     public static boolean ignoreOwnTeam = true;
-    public static double range = 96.0D;
-    public static int hudOffsetX;
+    public static double range = 48.0D;
+    public static int hudOffsetX = 8;
     public static int hudY = 8;
 
     private long lastConfigCheckAtNanos = Long.MIN_VALUE;
@@ -321,16 +321,16 @@ public final class TrackerClient implements ClientModInitializer {
 
     public static final class Config {
         public int configVersion = CURRENT_CONFIG_VERSION;
-        public boolean enabled = true;
+        public boolean enabled = false;
         public int toggleKeyCode = -1;
         public boolean ignoreOwnTeam = true;
-        public double range = 96.0D;
-        public int hudOffsetX;
+        public double range = 48.0D;
+        public int hudOffsetX = 8;
         public int hudY = 8;
 
         public void normalize() {
             if (configVersion < CURRENT_CONFIG_VERSION) configVersion = CURRENT_CONFIG_VERSION;
-            if (Double.isNaN(range) || Double.isInfinite(range)) range = 96.0D;
+            if (Double.isNaN(range) || Double.isInfinite(range)) range = 48.0D;
             range = Math.max(1.0D, Math.min(256.0D, range));
             hudOffsetX = Math.max(-10000, Math.min(10000, hudOffsetX));
             hudY = Math.max(-10000, Math.min(10000, hudY));
