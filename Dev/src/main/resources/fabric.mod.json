@@ -11,6 +11,7 @@
   "environment": "client",
   "entrypoints": {
     "client": [
+      "com.masteryj.core.SyntheticActionDispatcherClient",
       "com.masteryj.modgui.ModGuiClient",
       "com.masteryj.tracker.TrackerClient",
       "com.masteryj.aimassist.AimAssistClient",
