@@ -8,12 +8,19 @@ import org.junit.jupiter.api.Test;
 class AimAssistLockPolicyTest {
 
     @Test
-    void lockDistanceEndsImmediatelyAfterFourBlocks() {
-        assertTrue(AimAssistClient.isWithinLockDistance(0.0D));
-        assertTrue(AimAssistClient.isWithinLockDistance(16.0D));
-        assertFalse(AimAssistClient.isWithinLockDistance(16.000_001D));
-        assertFalse(AimAssistClient.isWithinLockDistance(Double.NaN));
-        assertFalse(AimAssistClient.isWithinLockDistance(Double.POSITIVE_INFINITY));
+    void lockDistanceEndsImmediatelyAfterFivePointFiveBlocks() {
+        assertTrue(AimAssistRangePolicy.isWithinDistance(0.0D));
+        assertTrue(AimAssistRangePolicy.isWithinDistance(30.25D));
+        assertFalse(AimAssistRangePolicy.isWithinDistance(30.250_001D));
+        assertFalse(AimAssistRangePolicy.isWithinDistance(Double.NaN));
+        assertFalse(AimAssistRangePolicy.isWithinDistance(Double.POSITIVE_INFINITY));
+    }
+
+    @Test
+    void losingLineOfSightDropsAnExistingLock() {
+        assertTrue(AimAssistRangePolicy.shouldDropLock(true, false));
+        assertFalse(AimAssistRangePolicy.shouldDropLock(true, true));
+        assertFalse(AimAssistRangePolicy.shouldDropLock(false, false));
     }
 
     @Test
@@ -25,6 +32,6 @@ class AimAssistLockPolicyTest {
         assertTrue(AimAssistClient.shouldCancelForBlockAction(false, false, true),
                 "placing a block cancels the lock");
         assertFalse(AimAssistClient.shouldCancelForBlockAction(false, false, false),
-                "ordinary combat movement keeps the same target latched");
+                "ordinary combat movement keeps the same visible target latched");
     }
 }
