@@ -9,12 +9,13 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.BlockItem;
+import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -39,22 +40,18 @@ public final class AimAssistClient implements ClientModInitializer {
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
     private static final int CURRENT_CONFIG_VERSION = 7;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
-    private static final long MINING_INTENT_DELAY_NANOS = 450_000_000L;
-    private static final double ACQUIRE_DISTANCE_SQUARED = 20.25D;
-    private static final double KEEP_DISTANCE_SQUARED = 17.64D;
-    private static final double APPLY_DISTANCE_SQUARED = 12.25D;
+    private static final double LOCK_DISTANCE_SQUARED = 16.0D;
 
     private final Random random = new Random();
     /** Fresh for one client tick only: avoids duplicate raycasts without allowing stale visibility. */
     private final Map<Integer, AimSample> tickSampleCache = new HashMap<>();
     private World lastWorld;
     private PlayerEntity target;
-    private BlockPos blockBreakFocusPos;
-    private long blockBreakFocusStartedAtNanos = Long.MIN_VALUE;
     private long lastConfigCheckAtNanos = Long.MIN_VALUE;
     private FileTime lastKnownConfigWriteTime;
     private boolean toggleKeyWasDown;
     private boolean requireToggleRelease;
+    private boolean leftWasDown;
     private float targetOffsetX;
     private float targetOffsetY;
     private float offsetVelocityX;
@@ -83,48 +80,62 @@ public final class AimAssistClient implements ClientModInitializer {
         if (client.world != lastWorld) {
             lastWorld = client.world;
             clearTarget();
-            clearBlockBreakFocus();
+            leftWasDown = false;
         }
 
         boolean leftDown = isMouseDown(client, 0);
-        if (!enabled || !isInActiveGameplay(client) || !leftDown) {
-            clearTarget();
-            clearBlockBreakFocus();
-            return;
-        }
+        boolean rightDown = isMouseDown(client, 1);
+        boolean leftRising = leftDown && !leftWasDown;
+        leftWasDown = leftDown;
 
-        long now = System.nanoTime();
-
-        // A BlockHitResult is the normal crosshair result whenever the player is looking at terrain.
-        // Do not kill AimAssist immediately. Only treat it as deliberate mining after the same block
-        // has stayed under a held attack button for a short, continuous period.
-        if (isActualBlockBreaking(client, now)) {
+        if (!enabled || !isInActiveGameplay(client)) {
             clearTarget();
             return;
         }
 
-        if (!isTargetValid(client, target, KEEP_DISTANCE_SQUARED, fov * 1.10F)) {
-            target = null;
+        boolean lookingAtBlock = client.crosshairTarget instanceof BlockHitResult;
+        boolean holdingPlaceableBlock = isHoldingPlaceableBlock(client);
+        boolean breakingBlock = client.interactionManager != null
+                && client.interactionManager.isBreakingBlock();
+        boolean blockAttackStarted = leftRising && lookingAtBlock;
+        boolean placingBlock = rightDown && lookingAtBlock && holdingPlaceableBlock;
+        if (target != null
+                && shouldCancelForBlockAction(breakingBlock, blockAttackStarted, placingBlock)) {
+            clearTarget();
+            return;
         }
 
+        // Once acquired, keep the same player latched until a block action, invalid entity,
+        // world/state reset, or the target moves beyond exactly four blocks.
+        if (!isLatchedTargetValid(client, target)) {
+            clearTarget();
+        }
+
+        // A new lock is only acquired while the physical attack button is held.
         if (target == null) {
+            if (!leftDown) return;
+
             if (client.crosshairTarget instanceof EntityHitResult entityHit
                     && entityHit.getEntity() instanceof PlayerEntity direct
-                    && isTargetValid(client, direct, ACQUIRE_DISTANCE_SQUARED, fov)) {
+                    && isTargetValid(client, direct, LOCK_DISTANCE_SQUARED, fov)) {
                 target = direct;
             }
             if (target == null) target = findBestTarget(client);
         }
 
         if (target == null) return;
+
         AimSample sample = getAimSample(client, target);
-        if (sample == null || sample.distanceSquared() > APPLY_DISTANCE_SQUARED
-                || !insideFov(client, sample, fov * 1.10F)) {
+        if (sample == null) {
+            // Keep the lock through a brief obstruction; do not steer through the wall.
+            return;
+        }
+        if (!isWithinLockDistance(sample.distanceSquared())) {
             clearTarget();
             return;
         }
 
-        applyAimAssist(client, sample, now);
+        applyAimAssist(client, sample, System.nanoTime());
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
@@ -139,7 +150,7 @@ public final class AimAssistClient implements ClientModInitializer {
         PlayerEntity best = null;
         double bestScore = Double.MAX_VALUE;
         for (PlayerEntity candidate : client.world.getPlayers()) {
-            if (!isTargetValid(client, candidate, ACQUIRE_DISTANCE_SQUARED, fov)) continue;
+            if (!isTargetValid(client, candidate, LOCK_DISTANCE_SQUARED, fov)) continue;
             AimSample sample = getAimSample(client, candidate);
             if (sample == null) continue;
 
@@ -156,15 +167,30 @@ public final class AimAssistClient implements ClientModInitializer {
 
     private boolean isTargetValid(MinecraftClient client, PlayerEntity candidate,
                                   double maxDistanceSquared, float allowedFov) {
-        if (client.player == null || client.world == null || candidate == null
-                || candidate == client.player || !candidate.isAlive() || candidate.isSpectator()
-                || isFriendlyTarget(client, candidate)
+        if (!isBasicTargetValid(client, candidate)
                 || client.player.squaredDistanceTo(candidate) > maxDistanceSquared) {
             return false;
         }
         AimSample sample = getAimSample(client, candidate);
         return sample != null && sample.distanceSquared() <= maxDistanceSquared
                 && insideFov(client, sample, allowedFov);
+    }
+
+    private boolean isLatchedTargetValid(MinecraftClient client, PlayerEntity candidate) {
+        return isBasicTargetValid(client, candidate)
+                && candidate.getWorld() == client.world
+                && client.world.getEntityById(candidate.getId()) == candidate
+                && isWithinLockDistance(client.player.squaredDistanceTo(candidate));
+    }
+
+    private boolean isBasicTargetValid(MinecraftClient client, PlayerEntity candidate) {
+        return client.player != null
+                && client.world != null
+                && candidate != null
+                && candidate != client.player
+                && candidate.isAlive()
+                && !candidate.isSpectator()
+                && !isFriendlyTarget(client, candidate);
     }
 
     private boolean insideFov(MinecraftClient client, AimSample sample, float allowedFov) {
@@ -256,26 +282,24 @@ public final class AimAssistClient implements ClientModInitializer {
         targetOffsetY = MathHelper.clamp(targetOffsetY + offsetVelocityY, -0.56F, 0.56F);
     }
 
-    private boolean isActualBlockBreaking(MinecraftClient client, long now) {
-        if (!(client.crosshairTarget instanceof BlockHitResult blockHitResult)) {
-            clearBlockBreakFocus();
-            return false;
-        }
-
-        BlockPos currentPos = blockHitResult.getBlockPos().toImmutable();
-        if (!currentPos.equals(blockBreakFocusPos)) {
-            blockBreakFocusPos = currentPos;
-            blockBreakFocusStartedAtNanos = now;
-            return false;
-        }
-
-        return blockBreakFocusStartedAtNanos != Long.MIN_VALUE
-                && now - blockBreakFocusStartedAtNanos >= MINING_INTENT_DELAY_NANOS;
+    private boolean isHoldingPlaceableBlock(MinecraftClient client) {
+        if (client.player == null) return false;
+        return isBlockItem(client.player.getMainHandStack())
+                || isBlockItem(client.player.getOffHandStack());
     }
 
-    private void clearBlockBreakFocus() {
-        blockBreakFocusPos = null;
-        blockBreakFocusStartedAtNanos = Long.MIN_VALUE;
+    private boolean isBlockItem(ItemStack stack) {
+        return stack != null && !stack.isEmpty() && stack.getItem() instanceof BlockItem;
+    }
+
+    static boolean shouldCancelForBlockAction(boolean breakingBlock,
+                                              boolean blockAttackStarted,
+                                              boolean placingBlock) {
+        return breakingBlock || blockAttackStarted || placingBlock;
+    }
+
+    static boolean isWithinLockDistance(double distanceSquared) {
+        return Double.isFinite(distanceSquared) && distanceSquared <= LOCK_DISTANCE_SQUARED;
     }
 
     private void clearTarget() {
@@ -313,7 +337,6 @@ public final class AimAssistClient implements ClientModInitializer {
             saveConfig(config);
             if (!enabled) {
                 clearTarget();
-                clearBlockBreakFocus();
             }
             sendToggleMessage(client, enabled);
         }
