@@ -34,8 +34,8 @@ public final class AutoRightClient implements ClientModInitializer {
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoright.json");
     private static final int CURRENT_CONFIG_VERSION = 5;
     private static final int MAX_SAFE_CPS = ClickScheduler.MAX_CPS;
-    private static final int DEFAULT_MIN_CPS = 30;
-    private static final int DEFAULT_MAX_CPS = 40;
+    private static final int DEFAULT_MIN_CPS = 8;
+    private static final int DEFAULT_MAX_CPS = 10;
     private static final int LEGACY_DEFAULT_MIN_CPS = 14;
     private static final int LEGACY_DEFAULT_MAX_CPS = 20;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
@@ -46,7 +46,7 @@ public final class AutoRightClient implements ClientModInitializer {
     private final ClickScheduler scheduler = new ClickScheduler();
 
     public static Config config;
-    public static boolean enabled = true;
+    public static boolean enabled = false;
     public static boolean blockMode = true;
     public static int toggleKeyCode = -1;
 
@@ -267,7 +267,7 @@ public final class AutoRightClient implements ClientModInitializer {
 
     public static class Config {
         public int configVersion = CURRENT_CONFIG_VERSION;
-        public boolean enabled = true;
+        public boolean enabled = false;
         public boolean blockMode = true;
         public int toggleKeyCode = -1;
         public int minCps = DEFAULT_MIN_CPS;

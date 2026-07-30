@@ -1,6 +1,7 @@
 package com.masteryj.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.masteryj.aimassist.AimAssistClient;
@@ -107,29 +108,29 @@ class ConfigNormalizationTest {
 
     @Test
     void defaultCpsValuesSurviveNormalize() {
-        // The shipped v5 defaults must sit inside the ceiling untouched (no clamp change).
+        // The shipped v5 reset defaults must sit inside the ceiling untouched.
         AutoLeftClient.Config left = new AutoLeftClient.Config();
         left.normalize();
-        assertEquals(30, left.minCps);
-        assertEquals(40, left.maxCps);
+        assertEquals(8, left.minCps);
+        assertEquals(10, left.maxCps);
         AutoRightClient.Config right = new AutoRightClient.Config();
         right.normalize();
-        assertEquals(30, right.minCps);
-        assertEquals(40, right.maxCps, "AutoRight default max now sits on the 40 ceiling");
+        assertEquals(8, right.minCps);
+        assertEquals(10, right.maxCps);
     }
 
-    // ---- v4 -> v5 default bump migration (preserve customised values) ----
+    // ---- v4 -> v5 default migration (preserve customised values) ----
 
     @Test
-    void autoLeftLegacyDefaultsMigrateToFasterDefaults() {
+    void autoLeftLegacyDefaultsMigrateToBalancedDefaults() {
         AutoLeftClient.Config c = new AutoLeftClient.Config();
         c.configVersion = 4;   // a pre-v5 file
         c.minCps = 8;          // exactly the shipped legacy defaults
         c.maxCps = 16;
         c.normalize();
         assertEquals(5, c.configVersion, "version is bumped");
-        assertEquals(30, c.minCps, "a user still on the legacy 8/16 defaults is moved to 30");
-        assertEquals(40, c.maxCps, "...and 40");
+        assertEquals(8, c.minCps, "legacy default min moves to the balanced reset value");
+        assertEquals(10, c.maxCps, "legacy default max moves to the balanced reset value");
     }
 
     @Test
@@ -145,15 +146,15 @@ class ConfigNormalizationTest {
     }
 
     @Test
-    void autoRightLegacyDefaultsMigrateToFasterDefaults() {
+    void autoRightLegacyDefaultsMigrateToBalancedDefaults() {
         AutoRightClient.Config c = new AutoRightClient.Config();
         c.configVersion = 4;
         c.minCps = 14;         // the shipped legacy AutoRight defaults
         c.maxCps = 20;
         c.normalize();
         assertEquals(5, c.configVersion);
-        assertEquals(30, c.minCps);
-        assertEquals(40, c.maxCps);
+        assertEquals(8, c.minCps);
+        assertEquals(10, c.maxCps);
     }
 
     @Test
@@ -177,7 +178,7 @@ class ConfigNormalizationTest {
         c.smoothness = 5.0f;      // above range -> clamp to 1.0
         c.fov = 1.0f;             // below range -> clamp to 10
         c.normalize();
-        assertEquals(0.24f, c.speed, 1e-6, "NaN speed falls back to default");
+        assertEquals(0.28f, c.speed, 1e-6, "NaN speed falls back to balanced default");
         assertEquals(1.0f, c.smoothness, 1e-6);
         assertEquals(10.0f, c.fov, 1e-6);
     }
@@ -189,7 +190,7 @@ class ConfigNormalizationTest {
         TrackerClient.Config c = new TrackerClient.Config();
         c.range = Double.NaN;
         c.normalize();
-        assertEquals(96.0, c.range, 1e-6, "NaN range falls back to default");
+        assertEquals(48.0, c.range, 1e-6, "NaN range falls back to balanced default");
 
         TrackerClient.Config c2 = new TrackerClient.Config();
         c2.range = 10_000.0;
@@ -200,11 +201,11 @@ class ConfigNormalizationTest {
     // ---- NinjaBridge migration ----
 
     @Test
-    void ninjaBridgeMigratesOldVersionAndKeepsAutoSwitch() {
+    void ninjaBridgeMigratesOldVersionWithoutEnablingAutoSwitch() {
         NinjaBridgeClient.Config c = new NinjaBridgeClient.Config();
         c.configVersion = 1; // old file -> migrate
         c.norm();
-        assertEquals(7, c.configVersion);
-        assertTrue(c.autoSwitch, "migration enables auto-switch");
+        assertEquals(8, c.configVersion);
+        assertFalse(c.autoSwitch, "migration must not enable automatic slot switching");
     }
 }

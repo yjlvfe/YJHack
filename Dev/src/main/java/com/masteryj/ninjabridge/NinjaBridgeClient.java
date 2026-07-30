@@ -32,7 +32,7 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-NinjaBridge");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("ninjabridge.json");
-    private static final int CURRENT_CONFIG_VERSION = 7;
+    private static final int CURRENT_CONFIG_VERSION = 8;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
     private static final int DEFAULT_KEY = GLFW.GLFW_KEY_RIGHT_SHIFT;
     private static final int MOUSE_OFF = 1000;
@@ -41,10 +41,10 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private final Map<Block, Boolean> blockCache = new IdentityHashMap<>();
 
     public static Config config;
-    public static boolean enabled = true;
+    public static boolean enabled = false;
     public static int toggleKeyCode = GLFW.GLFW_KEY_UNKNOWN;
     public static boolean active = false;
-    public static boolean autoSwitch = true;
+    public static boolean autoSwitch = false;
 
     private World lastWorld;
     private long lastConfigCheckNanos = Long.MIN_VALUE;
@@ -318,9 +318,9 @@ public final class NinjaBridgeClient implements ClientModInitializer {
 
     public static final class Config {
         public int configVersion = CURRENT_CONFIG_VERSION;
-        public boolean enabled = true;
+        public boolean enabled = false;
         public int toggleKeyCode = DEFAULT_KEY;
-        public boolean autoSwitch = true;
+        public boolean autoSwitch = false;
 
         public void norm() {
             normalize(true);
@@ -328,7 +328,7 @@ public final class NinjaBridgeClient implements ClientModInitializer {
 
         void normalize(boolean autoSwitchPresent) {
             if (configVersion < 6) toggleKeyCode = DEFAULT_KEY;
-            if (!autoSwitchPresent) autoSwitch = true;
+            if (!autoSwitchPresent) autoSwitch = false;
             configVersion = CURRENT_CONFIG_VERSION;
             toggleKeyCode = normalizeKey(toggleKeyCode);
         }
