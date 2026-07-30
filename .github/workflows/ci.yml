@@ -41,7 +41,7 @@ jobs:
           if-no-files-found: error
 
   publish_release:
-    if: github.event_name == 'pull_request' && github.head_ref == 'release/publish-v1.0.6-autoleft-hold-fix-20260730'
+    if: github.event_name == 'pull_request' && github.head_ref == 'release/publish-v1.2.1-input-aim-20260730'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -71,7 +71,7 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v1.0.6-autoleft-hold-fix-20260730
+          RELEASE_TAG: v1.2.1
           RELEASE_TARGET: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
@@ -85,6 +85,6 @@ jobs:
               YJHack-1.21.5.jar \
               YJHack-1.21.5.jar.sha256 \
               --target "$RELEASE_TARGET" \
-              --title "YJHack 1.21.5 — AutoLeft Hold Stability" \
-              --notes "Verified build for Minecraft 1.21.5. Stabilizes normal-range held AutoLeft combat clicks: transient weapon or crosshair changes no longer force a manual mouse release, follow-up held attacks run only while an entity is actually under the crosshair, and shared vanilla action dispatch now flushes after Minecraft input handling to avoid swallowed long holds. Attack reach is unchanged and AimAssist remains at the existing four-block visual lock. Existing global fairness, no-backlog behavior, release gates, Reset defaults, AutoRight protections, and previous hardening remain included. Built with Java 21 and Gradle 8.14.4 after the complete automated test suite."
+              --title "YJHack 1.2.1 — Configurable Input & AimAssist 5.5" \
+              --notes "Verified release for Minecraft 1.21.5. The YJHack panel now defaults to H and remains editable through Minecraft Controls. AutoLeft, AutoRight and AimAssist respect the configured attack/use controls. AimAssist now acquires and locks visible targets up to 5.5 blocks, immediately releases any target hidden behind terrain, and can reacquire when line of sight returns; this does not extend Minecraft attack reach. NinjaBridge behavior is unchanged. Includes the previous AutoLeft hold-stability repair, fair 40-action global budget, no backlog replay, release gates and all regression tests. Built with Java 21 and Gradle 8.14.4 after a clean test build."
           fi
