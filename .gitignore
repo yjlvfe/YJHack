@@ -1,7 +1,6 @@
 # Gradle
 .gradle/
 build/
-!gradle/wrapper/gradle-wrapper.jar
 
 # IDE
 .idea/
@@ -16,17 +15,26 @@ build/
 .DS_Store
 Thumbs.db
 
-# Minecraft
+# Minecraft / test runtime
 run/
-# Runtime dirs created by fabric-loader-junit / Minecraft bootstrap during tests
+logs/
 Dev/logs/
 Dev/config/
 Dev/mods/
-logs/
 
-# Graphify (only Dev/graphify-out is kept on disk; never committed)
+# Graphify outputs
+Dev/graphify-out/
 graphify-out/
 .graphify_*
 
-# JARs (generated build outputs; the frozen baseline lives outside the repo)
+# Reports and local journals
+report/
+.debug-journal.md
+
+# Backups
+*.bak
+*.backup
+
+# Generated JARs. The Gradle wrapper is source infrastructure and must stay tracked.
 *.jar
+!Dev/gradle/wrapper/gradle-wrapper.jar
