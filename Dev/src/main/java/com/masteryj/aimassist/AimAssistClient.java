@@ -14,6 +14,7 @@ import net.minecraft.util.Formatting;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -38,6 +39,7 @@ public final class AimAssistClient implements ClientModInitializer {
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
     private static final int CURRENT_CONFIG_VERSION = 6;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
+    private static final long MINING_INTENT_DELAY_NANOS = 450_000_000L;
     private static final double ACQUIRE_DISTANCE_SQUARED = 20.25D;
     private static final double KEEP_DISTANCE_SQUARED = 17.64D;
     private static final double APPLY_DISTANCE_SQUARED = 12.25D;
@@ -47,6 +49,8 @@ public final class AimAssistClient implements ClientModInitializer {
     private final Map<Integer, AimSample> tickSampleCache = new HashMap<>();
     private World lastWorld;
     private PlayerEntity target;
+    private BlockPos blockBreakFocusPos;
+    private long blockBreakFocusStartedAtNanos = Long.MIN_VALUE;
     private long lastConfigCheckAtNanos = Long.MIN_VALUE;
     private FileTime lastKnownConfigWriteTime;
     private boolean toggleKeyWasDown;
@@ -79,19 +83,26 @@ public final class AimAssistClient implements ClientModInitializer {
         if (client.world != lastWorld) {
             lastWorld = client.world;
             clearTarget();
+            clearBlockBreakFocus();
         }
 
-        if (!enabled || !isInActiveGameplay(client) || !isMouseDown(client, 0)) {
+        boolean leftDown = isMouseDown(client, 0);
+        if (!enabled || !isInActiveGameplay(client) || !leftDown) {
             clearTarget();
-            return;
-        }
-
-        if (client.crosshairTarget instanceof BlockHitResult) {
-            clearTarget();
+            clearBlockBreakFocus();
             return;
         }
 
         long now = System.nanoTime();
+
+        // A BlockHitResult is the normal crosshair result whenever the player is looking at terrain.
+        // Do not kill AimAssist immediately. Only treat it as deliberate mining after the same block
+        // has stayed under a held attack button for a short, continuous period.
+        if (isActualBlockBreaking(client, now)) {
+            clearTarget();
+            return;
+        }
+
         if (!isTargetValid(client, target, KEEP_DISTANCE_SQUARED, fov * 1.10F)) {
             target = null;
         }
@@ -245,6 +256,28 @@ public final class AimAssistClient implements ClientModInitializer {
         targetOffsetY = MathHelper.clamp(targetOffsetY + offsetVelocityY, -0.56F, 0.56F);
     }
 
+    private boolean isActualBlockBreaking(MinecraftClient client, long now) {
+        if (!(client.crosshairTarget instanceof BlockHitResult blockHitResult)) {
+            clearBlockBreakFocus();
+            return false;
+        }
+
+        BlockPos currentPos = blockHitResult.getBlockPos().toImmutable();
+        if (!currentPos.equals(blockBreakFocusPos)) {
+            blockBreakFocusPos = currentPos;
+            blockBreakFocusStartedAtNanos = now;
+            return false;
+        }
+
+        return blockBreakFocusStartedAtNanos != Long.MIN_VALUE
+                && now - blockBreakFocusStartedAtNanos >= MINING_INTENT_DELAY_NANOS;
+    }
+
+    private void clearBlockBreakFocus() {
+        blockBreakFocusPos = null;
+        blockBreakFocusStartedAtNanos = Long.MIN_VALUE;
+    }
+
     private void clearTarget() {
         target = null;
         targetOffsetX = 0.0F;
@@ -278,7 +311,10 @@ public final class AimAssistClient implements ClientModInitializer {
             enabled = !enabled;
             config.enabled = enabled;
             saveConfig(config);
-            if (!enabled) clearTarget();
+            if (!enabled) {
+                clearTarget();
+                clearBlockBreakFocus();
+            }
             sendToggleMessage(client, enabled);
         }
         toggleKeyWasDown = rawDown;
