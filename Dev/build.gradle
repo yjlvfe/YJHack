@@ -19,9 +19,6 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-
-    // Headless unit tests: fabric-loader-junit bundles JUnit 5 and sets up the
-    // Minecraft test classpath so production classes (e.g. RightClickPolicy) load.
     testImplementation "net.fabricmc:fabric-loader-junit:${project.loader_version}"
 }
 
@@ -35,13 +32,7 @@ java {
     withSourcesJar()
 }
 
-// Fully source-based Fabric build: all six client modules compile from
-// src/main/java. There is no pre-compiled bin/main blob injection — do not
-// reintroduce one (it was the cause of the earlier mismatched-class crashes).
-
 processResources {
-    // Capture at configuration time so the filesMatching closure (which runs at
-    // execution time) never dereferences Task.project (Gradle 10 / config-cache).
     def modVersion = project.version
     def loaderVersion = project.loader_version
     inputs.property 'version', modVersion
@@ -56,20 +47,20 @@ tasks.withType(JavaCompile).configureEach {
     it.options.encoding = 'UTF-8'
 }
 
-// Copy the remapped jar next to the project root for easy testing.
+// The convenience release copy is produced only after compilation and all checks succeed.
 tasks.register('copyJar', Copy) {
-    dependsOn remapJar
+    dependsOn check, remapJar
     from remapJar.archiveFile
     into file(project.hasProperty('outputJarDir') ? project.property('outputJarDir') : file('..'))
     rename { 'YJHack-1.21.5.jar' }
 }
 
-build.finalizedBy copyJar
+tasks.named('build') {
+    dependsOn copyJar
+}
 
-// Resolve the path at configuration time and delete via java.io.File at execution,
-// so nothing calls Task.project during task execution (configuration-cache friendly).
+// Remove only the generated convenience copy. The frozen reference build stays outside the repo.
 def rootConvenienceJar = file('../YJHack-1.21.5.jar')
 clean.doLast {
-    // Remove the convenience copy copyJar drops next to the project root.
     rootConvenienceJar.delete()
 }
