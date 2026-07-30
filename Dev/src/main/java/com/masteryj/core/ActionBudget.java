@@ -9,10 +9,10 @@ import java.util.function.BooleanSupplier;
 /**
  * Global fair budget for synthetic AutoLeft and AutoRight actions.
  *
- * <p>Modules submit requests at the end of a client tick. The dispatcher flushes them at the
- * beginning of the next tick, before vanilla handles gameplay input. This removes the old
- * wall-clock "tick bucket" approximation and prevents queued actions from surviving across
- * menus, focus changes, releases, or world transitions.
+ * <p>Modules submit requests late in a client tick. The dispatcher flushes previously submitted
+ * work at END_CLIENT_TICK after vanilla input handling, and newly submitted requests remain for the
+ * following tick. Guards are checked immediately before emission so queued actions cannot survive
+ * menus, focus changes, releases, slot changes, or world transitions.
  *
  * <p>The contract is global, not per-module:
  * <ul>
@@ -178,7 +178,7 @@ public final class ActionBudget {
         emitters[module] = null;
     }
 
-    /** Clear all pending requests and rolling history on disconnect or world replacement. */
+    /** Clear pending requests, rate history, and fairness state on a gameplay-session reset. */
     public void resetAll() {
         Arrays.fill(requested, 0);
         Arrays.fill(guards, null);
@@ -186,6 +186,7 @@ public final class ActionBudget {
         Arrays.fill(recent, 0L);
         recentCount = 0;
         recentHead = 0;
+        preferredModule = 0;
     }
 
     public long dropped(Module module) {
