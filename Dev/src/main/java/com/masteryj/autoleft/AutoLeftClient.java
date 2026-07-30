@@ -10,18 +10,16 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.screen.ingame.CreativeInventoryScreen;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.item.AxeItem;
 import net.minecraft.item.ItemStack;
+import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
-import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.hit.HitResult;
 import org.lwjgl.glfw.GLFW;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,15 +35,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
     private static final int CURRENT_CONFIG_VERSION = 5;
-    /**
-     * CPS hard-ceiling. The phase-accumulator scheduler emits at most TWO pulses per client
-     * tick and the client ticks at ~20 TPS, so ~40 CPS is the real executable rate — anything
-     * above would just be a displayed value the mod can never actually deliver. Also the GUI
-     * slider maximum. Kept in sync with {@link com.masteryj.core.ActionBudget} and
-     * {@link com.masteryj.core.ClickScheduler#MAX_PULSES_PER_TICK}.
-     */
-    private static final int MAX_SAFE_CPS = 40;
-    /** Shipped defaults (v5). A config still on the legacy defaults is migrated up to these. */
+    private static final int MAX_SAFE_CPS = ClickScheduler.MAX_CPS;
     private static final int DEFAULT_MIN_CPS = 30;
     private static final int DEFAULT_MAX_CPS = 40;
     private static final int LEGACY_DEFAULT_MIN_CPS = 8;
@@ -54,17 +44,18 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final InputUtil.Key LEFT_MOUSE = InputUtil.Type.MOUSE.createFromCode(0);
 
     private final Random random = new Random();
-    private final ClickScheduler leftScheduler = new ClickScheduler();
+    private final ClickScheduler scheduler = new ClickScheduler();
 
     public static Config config;
     public static boolean enabled = true;
     public static boolean weaponCheck = false;
     public static int toggleKeyCode = -1;
-    private boolean leftSyntheticDown = false;
-    private boolean leftPhysicalWasDown = false;   // debug-only physical rising-edge tracking
+
+    private boolean physicalWasDown;
+    private boolean requireRelease;
+    private boolean toggleKeyWasDown;
     private long lastConfigCheckAtNanos = Long.MIN_VALUE;
-    private FileTime lastKnownConfigWriteTime = null;
-    private boolean toggleKeyWasDown = false;
+    private FileTime lastKnownConfigWriteTime;
 
     @Override
     public void onInitializeClient() {
@@ -77,103 +68,108 @@ public final class AutoLeftClient implements ClientModInitializer {
         maybeReloadConfig();
         handleToggleKey(client);
 
+        boolean physicalDown = isMouseDown(client, 0);
+        boolean rising = physicalDown && !physicalWasDown;
+
         if (DebugStats.ENABLED) {
-            boolean physicalDown = isMouseDown(client, 0);
-            if (physicalDown && !leftPhysicalWasDown) DebugStats.onAutoLeftPhysicalPress();
-            leftPhysicalWasDown = physicalDown;
-            DebugStats.setAutoLeftConfiguredCps(config == null ? 0 : config.minCps, config == null ? 0 : config.maxCps);
-            if (physicalDown && (!enabled || !isInActiveGameplay(client))) DebugStats.onAutoLeftGateRejected();
+            if (rising) DebugStats.onAutoLeftPhysicalPress();
+            DebugStats.setAutoLeftConfiguredCps(config == null ? 0 : config.minCps,
+                    config == null ? 0 : config.maxCps);
         }
 
         if (!enabled || !isInActiveGameplay(client)) {
-            resetState();
+            if (physicalDown) requireRelease = true;
+            resetAutomation();
+            physicalWasDown = physicalDown;
             return;
         }
 
-        if (weaponCheck && client.player != null) {
-            ItemStack held = client.player.getMainHandStack();
-            if (!isSwordOrAxe(held)) {
-                resetState();
-                return;
-            }
-        }
-
-        if (!isMouseDown(client, 0)) {
-            resetState();
-            return;
-        }
-
-        long now = System.nanoTime();
-
-        // Creative inventory screen: hold left button only, no auto-click
-        if (client.currentScreen instanceof CreativeInventoryScreen) {
-            leftScheduler.armImmediate();
-            holdLeftMouse();
-            return;
-        }
-
-        // Looking at a block → hold for mining (no CPS pulsing)
-        if (client.crosshairTarget != null && client.crosshairTarget.getType() == HitResult.Type.BLOCK) {
-            leftScheduler.armImmediate();
-            holdLeftMouse();
-            return;
-        }
-
-        // Tick-aware cadence: 0..2 pulses this tick, NO catch-up. A FIXED cps is added to the
-        // phase each tick (never a value derived from elapsed time), so a client stall is never
-        // replayed as a burst and 40 CPS reliably yields two pulses per tick despite jitter.
-        // The shared ActionBudget is the final combined-rate guard.
-        int pulses = leftScheduler.pulsesThisTick(pickCps());
-        int emitted = 0;
-        for (int i = 0; i < pulses; i++) {
-            if (ActionBudget.INSTANCE.tryConsume(ActionBudget.Module.LEFT, now)) {
-                triggerLeftPulse();
-                DebugStats.onAutoLeftPulse();
-                emitted++;
+        // A button held through a menu, focus loss, death, disable, or world transition must be
+        // released before automation can start again.
+        if (requireRelease) {
+            resetAutomation();
+            if (!physicalDown) {
+                requireRelease = false;
+                physicalWasDown = false;
             } else {
-                DebugStats.onAutoLeftBudgetRejected();
+                physicalWasDown = true;
             }
+            return;
         }
-        if (DebugStats.ENABLED) DebugStats.onAutoLeftTickPulses(emitted);
 
-        releaseLeftHold();
-    }
-
-    private void triggerLeftPulse() {
-        holdLeftMouse();
-        KeyBinding.onKeyPressed(LEFT_MOUSE);
-    }
-
-    private void holdLeftMouse() {
-        if (!leftSyntheticDown) {
-            KeyBinding.setKeyPressed(LEFT_MOUSE, true);
-            leftSyntheticDown = true;
+        if (weaponCheck && !isHoldingAllowedWeapon(client)) {
+            if (physicalDown) requireRelease = true;
+            resetAutomation();
+            physicalWasDown = physicalDown;
+            return;
         }
-    }
 
-    private void releaseLeftHold() {
-        if (leftSyntheticDown) {
-            KeyBinding.setKeyPressed(LEFT_MOUSE, false);
-            leftSyntheticDown = false;
+        if (!physicalDown) {
+            physicalWasDown = false;
+            resetAutomation();
+            return;
         }
+
+        physicalWasDown = true;
+
+        // Vanilla already handled the real rising-edge click. Never add a duplicate synthetic
+        // pulse in that same tick.
+        if (rising) {
+            resetAutomation();
+            return;
+        }
+
+        // Mining remains completely vanilla; no synthetic attack pulses while targeting blocks.
+        if (isLookingAtBlock(client)) {
+            resetAutomation();
+            return;
+        }
+
+        int pulses = scheduler.pulsesThisTick(pickCps());
+        if (pulses <= 0) return;
+
+        ActionBudget.INSTANCE.request(ActionBudget.Module.LEFT, pulses,
+                () -> mayEmit(client),
+                () -> {
+                    KeyBinding.onKeyPressed(LEFT_MOUSE);
+                    DebugStats.onAutoLeftPulse();
+                });
     }
 
-    private void resetState() {
-        releaseLeftHold();
-        leftScheduler.clear();
-        ActionBudget.INSTANCE.reset(ActionBudget.Module.LEFT);
+    private boolean mayEmit(MinecraftClient client) {
+        return enabled
+                && isInActiveGameplay(client)
+                && isMouseDown(client, 0)
+                && !isLookingAtBlock(client)
+                && (!weaponCheck || isHoldingAllowedWeapon(client));
     }
 
-    /** Random target CPS in [minCps, maxCps] for this tick — the phase-accumulator increment. */
+    private void resetAutomation() {
+        scheduler.clear();
+        ActionBudget.INSTANCE.cancel(ActionBudget.Module.LEFT);
+    }
+
     private int pickCps() {
-        int min = config.minCps;
-        int max = config.maxCps;
-        if (min >= max) return min;
-        return min + random.nextInt(max - min + 1);
+        int a = config == null ? DEFAULT_MIN_CPS : config.minCps;
+        int b = config == null ? DEFAULT_MAX_CPS : config.maxCps;
+        int min = Math.max(1, Math.min(MAX_SAFE_CPS, Math.min(a, b)));
+        int max = Math.max(min, Math.min(MAX_SAFE_CPS, Math.max(a, b)));
+        return min == max ? min : min + random.nextInt(max - min + 1);
+    }
+
+    private boolean isLookingAtBlock(MinecraftClient client) {
+        return client.crosshairTarget != null && client.crosshairTarget.getType() == HitResult.Type.BLOCK;
+    }
+
+    private boolean isHoldingAllowedWeapon(MinecraftClient client) {
+        if (client.player == null) return false;
+        ItemStack held = client.player.getMainHandStack();
+        return isSwordOrAxe(held);
     }
 
     private boolean isMouseDown(MinecraftClient client, int button) {
-        return GLFW.glfwGetMouseButton(client.getWindow().getHandle(), button) == 1;
+        return client != null && client.getWindow() != null
+                && GLFW.glfwGetMouseButton(client.getWindow().getHandle(), button) == GLFW.GLFW_PRESS;
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
@@ -189,8 +185,6 @@ public final class AutoLeftClient implements ClientModInitializer {
         return stack.isIn(ItemTags.SWORDS) || stack.getItem() instanceof AxeItem;
     }
 
-    // --- Toggle key ---
-
     private void handleToggleKey(MinecraftClient client) {
         int key = normalizeToggleKeyCode(toggleKeyCode);
         if (key == -1) {
@@ -202,7 +196,10 @@ public final class AutoLeftClient implements ClientModInitializer {
             enabled = !enabled;
             config.enabled = enabled;
             saveConfig(config);
-            if (!enabled) resetState();
+            if (!enabled) {
+                requireRelease = isMouseDown(client, 0);
+                resetAutomation();
+            }
             sendToggleMessage(client, enabled, "AutoLeft");
         }
         toggleKeyWasDown = pressed;
@@ -211,12 +208,10 @@ public final class AutoLeftClient implements ClientModInitializer {
     private void sendToggleMessage(MinecraftClient client, boolean on, String moduleName) {
         if (client.player == null) return;
         String status = on ? "enabled" : "disabled";
-        MutableText text = Text.literal(moduleName + " " + status).formatted(on ? Formatting.GREEN : Formatting.RED);
-        client.player.sendMessage(text, false);
+        MutableText text = Text.literal(moduleName + " " + status)
+                .formatted(on ? Formatting.GREEN : Formatting.RED);
         client.player.sendMessage(text, true);
     }
-
-    // --- Config ---
 
     public static class Config {
         public int configVersion = CURRENT_CONFIG_VERSION;
@@ -225,18 +220,15 @@ public final class AutoLeftClient implements ClientModInitializer {
         public int toggleKeyCode = -1;
         public int minCps = DEFAULT_MIN_CPS;
         public int maxCps = DEFAULT_MAX_CPS;
+
         public void normalize() {
             if (configVersion < CURRENT_CONFIG_VERSION) {
-                // One-time default bump: a config still on the shipped legacy defaults is moved
-                // to the new faster defaults; any hand-customised value is preserved untouched.
                 if (minCps == LEGACY_DEFAULT_MIN_CPS && maxCps == LEGACY_DEFAULT_MAX_CPS) {
                     minCps = DEFAULT_MIN_CPS;
                     maxCps = DEFAULT_MAX_CPS;
                 }
                 configVersion = CURRENT_CONFIG_VERSION;
             }
-            // Clamp CPS to the conservative Release ceiling (MAX_SAFE_CPS) so a hand-edited
-            // file cannot produce packet-spam click rates, then enforce min <= max.
             minCps = Math.max(1, Math.min(MAX_SAFE_CPS, minCps));
             maxCps = Math.max(1, Math.min(MAX_SAFE_CPS, maxCps));
             if (minCps > maxCps) {
@@ -248,11 +240,10 @@ public final class AutoLeftClient implements ClientModInitializer {
         }
     }
 
-    // --- Config persistence ---
-
     private void maybeReloadConfig() {
         long now = System.nanoTime();
-        if (lastConfigCheckAtNanos != Long.MIN_VALUE && now - lastConfigCheckAtNanos < CONFIG_RELOAD_INTERVAL_NANOS) return;
+        if (lastConfigCheckAtNanos != Long.MIN_VALUE
+                && now - lastConfigCheckAtNanos < CONFIG_RELOAD_INTERVAL_NANOS) return;
         lastConfigCheckAtNanos = now;
         try {
             if (!Files.exists(CONFIG_PATH)) return;
@@ -261,7 +252,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             config = loadConfig();
             applyRuntimeConfig(config);
         } catch (IOException e) {
-            LOGGER.error("Failed to reload config: {}", e.getMessage());
+            LOGGER.error("Failed to reload config", e);
         }
     }
 
@@ -270,15 +261,13 @@ public final class AutoLeftClient implements ClientModInitializer {
             if (Files.exists(CONFIG_PATH)) {
                 Config cfg = GSON.fromJson(Files.readString(CONFIG_PATH), Config.class);
                 if (cfg != null) {
-                    // Migration: preserve user settings, don't delete on version bump.
-                    // New fields absent from the JSON get their class-level default from Gson.
                     cfg.normalize();
                     lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
                     return cfg;
                 }
             }
         } catch (Exception e) {
-            LOGGER.error("Failed to load config: {}", e.getMessage());
+            LOGGER.error("Failed to load config", e);
         }
         Config cfg = new Config();
         cfg.normalize();
@@ -287,6 +276,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     }
 
     public void saveConfig(Config cfg) {
+        if (cfg == null) return;
         cfg.normalize();
         applyRuntimeConfig(cfg);
         try {
@@ -294,18 +284,19 @@ public final class AutoLeftClient implements ClientModInitializer {
             Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
             lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
         } catch (IOException e) {
-            LOGGER.error("Failed to save config: {}", e.getMessage());
+            LOGGER.error("Failed to save config", e);
         }
     }
 
     public static void saveConfigStatic(Config cfg) {
+        if (cfg == null) return;
         cfg.normalize();
         applyRuntimeConfig(cfg);
         try {
             Files.createDirectories(CONFIG_PATH.getParent());
             Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
         } catch (IOException e) {
-            LOGGER.error("Failed to save config: {}", e.getMessage());
+            LOGGER.error("Failed to save config", e);
         }
     }
 
@@ -317,8 +308,6 @@ public final class AutoLeftClient implements ClientModInitializer {
         toggleKeyCode = cfg.toggleKeyCode;
     }
 
-    // --- Util ---
-
     private static int normalizeToggleKeyCode(int key) {
         if (key >= 1000) return key;
         return key > 0 ? key : -1;
@@ -327,9 +316,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static boolean isToggleBindingPressed(MinecraftClient client, int key) {
         if (client.currentScreen != null || !client.isWindowFocused()) return false;
         long handle = client.getWindow().getHandle();
-        if (key >= 1000) {
-            return GLFW.glfwGetMouseButton(handle, key - 1000) == 1;
-        }
-        return GLFW.glfwGetKey(handle, key) == 1;
+        if (key >= 1000) return GLFW.glfwGetMouseButton(handle, key - 1000) == GLFW.GLFW_PRESS;
+        return GLFW.glfwGetKey(handle, key) == GLFW.GLFW_PRESS;
     }
 }
