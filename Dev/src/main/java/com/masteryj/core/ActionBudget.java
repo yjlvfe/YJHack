@@ -1,5 +1,8 @@
 package com.masteryj.core;
 
+import com.masteryj.mixin.MinecraftClientInvoker;
+import net.minecraft.client.MinecraftClient;
+
 import java.util.Arrays;
 import java.util.function.BooleanSupplier;
 
@@ -8,7 +11,7 @@ import java.util.function.BooleanSupplier;
  *
  * <p>Modules submit requests at the end of a client tick. The dispatcher flushes them at the
  * beginning of the next tick, before vanilla handles gameplay input. This removes the old
- * wall-clock "tick bucket" approximation and prevents queued key presses from surviving across
+ * wall-clock "tick bucket" approximation and prevents queued actions from surviving across
  * menus, focus changes, releases, or world transitions.
  *
  * <p>The contract is global, not per-module:
@@ -62,9 +65,23 @@ public final class ActionBudget {
     }
 
     /**
-     * Flush one real client tick. Called once from START_CLIENT_TICK by the dispatcher entrypoint.
+     * Test-compatible flush which uses the supplied emitter callback. Runtime code should call
+     * {@link #flush(MinecraftClient, long)} so the exact vanilla click methods are invoked.
      */
     public void flush(long nowNanos) {
+        flushInternal(null, nowNanos);
+    }
+
+    /**
+     * Flush one real client tick using Minecraft's own private attack/use methods. Calling the
+     * vanilla methods directly avoids the old KeyBinding queue race that could swallow a held
+     * left or right click before Minecraft consumed it.
+     */
+    public void flush(MinecraftClient client, long nowNanos) {
+        flushInternal(client, nowNanos);
+    }
+
+    private void flushInternal(MinecraftClient client, long nowNanos) {
         boolean[] valid = new boolean[MODULES];
         for (int m = 0; m < MODULES; m++) {
             if (requested[m] <= 0) continue;
@@ -104,16 +121,33 @@ public final class ActionBudget {
                 dropped[m] += deniedByBudget;
                 notifyBudgetRejected(Module.values()[m], deniedByBudget);
             }
+
+            Module module = Module.values()[m];
             Runnable emitter = emitters[m];
             for (int i = 0; i < granted[m]; i++) {
-                emitter.run();
+                if (client == null) {
+                    emitter.run();
+                } else {
+                    emitVanillaAction(client, module);
+                }
                 record(nowNanos);
                 emittedThisTick++;
             }
-            notifyTickPulses(Module.values()[m], granted[m]);
+            notifyTickPulses(module, granted[m]);
             clearPending(m);
         }
         maxInOneTick = Math.max(maxInOneTick, emittedThisTick);
+    }
+
+    private void emitVanillaAction(MinecraftClient client, Module module) {
+        MinecraftClientInvoker invoker = (MinecraftClientInvoker) client;
+        if (module == Module.LEFT) {
+            invoker.yjhack$invokeDoAttack();
+            DebugStats.onAutoLeftPulse();
+        } else {
+            invoker.yjhack$invokeDoItemUse();
+            DebugStats.onAutoRightBlockPulse();
+        }
     }
 
     private int grantOne(int module, boolean[] valid, int[] granted, int remaining) {
