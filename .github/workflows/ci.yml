@@ -41,7 +41,7 @@ jobs:
           if-no-files-found: error
 
   publish_release:
-    if: github.event_name == 'pull_request' && github.head_ref == 'release/publish-v1.0.4-sticky-aim-20260730'
+    if: github.event_name == 'pull_request' && github.head_ref == 'release/publish-v1.0.5-held-click-fix-20260730'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -71,7 +71,7 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v1.0.4-sticky-aim-20260730
+          RELEASE_TAG: v1.0.5-held-click-fix-20260730
           RELEASE_TARGET: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
@@ -85,6 +85,6 @@ jobs:
               YJHack-1.21.5.jar \
               YJHack-1.21.5.jar.sha256 \
               --target "$RELEASE_TARGET" \
-              --title "YJHack 1.21.5 — Sticky Aim 4 Blocks" \
-              --notes "Verified build for Minecraft 1.21.5. AimAssist now latches the acquired player and keeps the same target after attack release or movement outside the initial FOV. The lock ends on actual block breaking, starting a block attack, placing a block from either hand, invalid/world state, or distance beyond exactly four blocks. Temporary wall obstruction pauses steering without dropping the stored target. Includes balanced Reset defaults and all previous input/build hardening. Built with Java 21 and Gradle 8.14.4 after the complete automated test suite."
+              --title "YJHack 1.21.5 — Held Click Fix" \
+              --notes "Verified build for Minecraft 1.21.5. Fixes swallowed long-held AutoLeft attacks and AutoRight block uses by replacing delayed KeyBinding queue injection with direct calls to Minecraft's own vanilla doAttack and doItemUse methods through a client-only Mixin invoker. Existing release guards, slot-change cancellation, pass-through item behavior, global fairness, two-actions-per-tick limit, forty-actions-per-second limit, AimAssist sticky lock, and balanced Reset defaults remain included. Built with Java 21 and Gradle 8.14.4 after the complete automated test suite."
           fi
