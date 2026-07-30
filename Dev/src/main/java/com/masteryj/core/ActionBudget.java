@@ -1,140 +1,187 @@
 package com.masteryj.core;
 
+import java.util.Arrays;
+import java.util.function.BooleanSupplier;
+
 /**
- * Shared ceiling on <b>synthetic</b> (mod-generated) click/use actions from AutoLeft and
- * AutoRight. Real vanilla input is never counted or throttled here — the budget only ever
- * limits actions the mod injects, so it can never delay or block the player's own clicks.
- * A denied action is <b>dropped</b>, never queued, so it can never burst later.
+ * Global fair budget for synthetic AutoLeft and AutoRight actions.
  *
- * <p>Each module has its <b>own independent quota</b>, so the order the two tick callbacks
- * run in cannot let one module starve the other: whoever asks first never consumes the
- * other's allowance. Two caps per module:
+ * <p>Modules submit requests at the end of a client tick. The dispatcher flushes them at the
+ * beginning of the next tick, before vanilla handles gameplay input. This removes the old
+ * wall-clock "tick bucket" approximation and prevents queued key presses from surviving across
+ * menus, focus changes, releases, or world transitions.
+ *
+ * <p>The contract is global, not per-module:
  * <ul>
- *   <li>{@link #MAX_PER_TICK_PER_MODULE} = 2 — at most two synthetic actions per module per
- *       client tick, matching the {@link ClickScheduler} two-pulses-per-tick cadence ceiling
- *       (~20 TPS ⇒ up to ~40 CPS).</li>
- *   <li>{@link #MAX_PER_SECOND_PER_MODULE} = 40 — a <b>sliding</b> one-second window (not a
- *       fixed window), so a batch can never straddle a second boundary and double up.</li>
+ *   <li>at most two synthetic actions total in one client tick;</li>
+ *   <li>at most forty synthetic actions total in any sliding one-second window;</li>
+ *   <li>when both modules request actions, each receives one before either receives a second;</li>
+ *   <li>denied actions are dropped and are never replayed later.</li>
  * </ul>
- *
- * <p>This is a secondary safety net, not the rate source: the phase accumulator already caps
- * the cadence at two pulses per tick, so at a steady 40&nbsp;CPS on a normal 20&nbsp;TPS
- * client the budget rejects nothing. A rejection means a genuine over-rate — a duplicate
- * click path or a third pulse in one tick — which is exactly what we want caught.
- *
- * <p>Single-threaded (client tick only): no locks, no threads, no sleep, no allocation on the
- * hot path. All timing is passed in as {@code nowNanos} from the monotonic
- * {@link System#nanoTime()} clock so the caps are unit-testable without a Minecraft runtime
- * and are immune to a system-clock jump.
+ * Real vanilla input never enters this budget.
  */
 public final class ActionBudget {
 
-    /** At most two synthetic actions per module per client tick. */
-    public static final int MAX_PER_TICK_PER_MODULE = 2;
-    /** Per-module sliding-second cap; equals the 40 CPS ceiling. */
-    public static final int MAX_PER_SECOND_PER_MODULE = 40;
-
+    public static final int MAX_PER_TICK_GLOBAL = 2;
+    public static final int MAX_PER_SECOND_GLOBAL = 40;
     private static final long WINDOW_NANOS = 1_000_000_000L;
-    private static final long TICK_NANOS = 50_000_000L;
 
-    /** The two synthetic-action producers that share (independently) this budget. */
     public enum Module { LEFT, RIGHT }
-    private static final int MODULES = 2;
+    private static final int MODULES = Module.values().length;
 
-    /** Shared production instance used by AutoLeft + AutoRight. Tests use {@code new}. */
     public static final ActionBudget INSTANCE = new ActionBudget();
 
-    // Per-module sliding window: a ring of the most recent action timestamps (nanos).
-    private final long[][] recent = new long[MODULES][MAX_PER_SECOND_PER_MODULE];
-    private final int[] recentCount = new int[MODULES];
-    private final int[] recentHead = new int[MODULES];
-    private final long[] lastTickBucket = new long[MODULES];
-    private final int[] tickUsed = new int[MODULES];       // synthetic actions used in the current tick bucket
+    private final int[] requested = new int[MODULES];
+    private final BooleanSupplier[] guards = new BooleanSupplier[MODULES];
+    private final Runnable[] emitters = new Runnable[MODULES];
     private final long[] dropped = new long[MODULES];
 
-    // Diagnostic only: highest combined synthetic actions observed within one tick.
-    private long globalTickBucket = Long.MIN_VALUE;
-    private int usedThisGlobalTick;
+    private final long[] recent = new long[MAX_PER_SECOND_GLOBAL];
+    private int recentCount;
+    private int recentHead;
+    private int preferredModule;
     private int maxInOneTick;
 
-    public ActionBudget() {
-        for (int m = 0; m < MODULES; m++) {
-            lastTickBucket[m] = Long.MIN_VALUE;
-        }
+    /**
+     * Submit up to two actions for the next dispatcher flush. Repeated submissions from the same
+     * module are combined but still capped at two. The guard is re-checked immediately before
+     * emission so a release, slot change, menu, focus loss, or world change cancels stale work.
+     */
+    public void request(Module module, int pulses, BooleanSupplier guard, Runnable emitter) {
+        if (module == null || pulses <= 0 || guard == null || emitter == null) return;
+        int m = module.ordinal();
+        requested[m] = Math.min(MAX_PER_TICK_GLOBAL, requested[m] + pulses);
+        guards[m] = guard;
+        emitters[m] = emitter;
+    }
+
+    /** Cancel pending work for one module without clearing the global rolling-rate history. */
+    public void cancel(Module module) {
+        if (module == null) return;
+        clearPending(module.ordinal());
     }
 
     /**
-     * Reserve one synthetic action for {@code module} at monotonic {@code nowNanos}.
-     * True if allowed; false (dropped, never queued) if the module's per-tick or
-     * sliding-second cap is hit.
+     * Flush one real client tick. Called once from START_CLIENT_TICK by the dispatcher entrypoint.
      */
-    public boolean tryConsume(Module module, long nowNanos) {
-        int m = module.ordinal();
-        long bucket = Math.floorDiv(nowNanos, TICK_NANOS);
-        if (lastTickBucket[m] != bucket) {                        // entered a new tick: reset per-tick counter
-            lastTickBucket[m] = bucket;
-            tickUsed[m] = 0;
-        }
-        if (tickUsed[m] >= MAX_PER_TICK_PER_MODULE) {             // per-tick cap: 2 / module
-            dropped[m]++;
-            return false;
-        }
-        if (countWithinWindow(m, nowNanos) >= MAX_PER_SECOND_PER_MODULE) {   // sliding second
-            dropped[m]++;
-            return false;
-        }
-        tickUsed[m]++;
-        recent[m][recentHead[m]] = nowNanos;
-        recentHead[m] = (recentHead[m] + 1) % MAX_PER_SECOND_PER_MODULE;
-        if (recentCount[m] < MAX_PER_SECOND_PER_MODULE) {
-            recentCount[m]++;
-        }
-        if (bucket != globalTickBucket) {
-            globalTickBucket = bucket;
-            usedThisGlobalTick = 0;
-        }
-        usedThisGlobalTick++;
-        if (usedThisGlobalTick > maxInOneTick) {
-            maxInOneTick = usedThisGlobalTick;
-        }
-        return true;
-    }
-
-    private int countWithinWindow(int m, long nowNanos) {
-        int c = 0;
-        for (int i = 0; i < recentCount[m]; i++) {
-            if (nowNanos - recent[m][i] < WINDOW_NANOS) {
-                c++;
+    public void flush(long nowNanos) {
+        boolean[] valid = new boolean[MODULES];
+        for (int m = 0; m < MODULES; m++) {
+            if (requested[m] <= 0) continue;
+            valid[m] = guards[m] != null && guards[m].getAsBoolean();
+            if (!valid[m]) {
+                notifyGateRejected(Module.values()[m], requested[m]);
+                dropped[m] += requested[m];
+                requested[m] = 0;
             }
         }
-        return c;
+
+        int availableThisSecond = Math.max(0,
+                MAX_PER_SECOND_GLOBAL - countWithinWindow(nowNanos));
+        int remaining = Math.min(MAX_PER_TICK_GLOBAL, availableThisSecond);
+        int[] granted = new int[MODULES];
+
+        int first = preferredModule;
+        int second = 1 - first;
+        preferredModule = second;
+
+        // Fair first pass: one action per requesting module.
+        remaining = grantOne(first, valid, granted, remaining);
+        remaining = grantOne(second, valid, granted, remaining);
+
+        // If only one module requested, it may use the remaining global slot.
+        while (remaining > 0) {
+            int before = remaining;
+            remaining = grantOne(first, valid, granted, remaining);
+            if (remaining > 0) remaining = grantOne(second, valid, granted, remaining);
+            if (remaining == before) break;
+        }
+
+        int emittedThisTick = 0;
+        for (int m = 0; m < MODULES; m++) {
+            int deniedByBudget = requested[m] - granted[m];
+            if (deniedByBudget > 0) {
+                dropped[m] += deniedByBudget;
+                notifyBudgetRejected(Module.values()[m], deniedByBudget);
+            }
+            Runnable emitter = emitters[m];
+            for (int i = 0; i < granted[m]; i++) {
+                emitter.run();
+                record(nowNanos);
+                emittedThisTick++;
+            }
+            notifyTickPulses(Module.values()[m], granted[m]);
+            clearPending(m);
+        }
+        maxInOneTick = Math.max(maxInOneTick, emittedThisTick);
     }
 
-    /**
-     * Clear one module's live rate window — world change / disconnect / GUI open / focus loss
-     * / disable / death. Per-module so resetting an idle module never wipes the other's window.
-     * Cumulative diagnostics ({@link #dropped}, {@link #maxInOneTick}) are intentionally kept.
-     */
-    public void reset(Module module) {
-        int m = module.ordinal();
-        recentCount[m] = 0;
-        recentHead[m] = 0;
-        lastTickBucket[m] = Long.MIN_VALUE;
-        tickUsed[m] = 0;
+    private int grantOne(int module, boolean[] valid, int[] granted, int remaining) {
+        if (remaining <= 0 || !valid[module] || granted[module] >= requested[module]) {
+            return remaining;
+        }
+        granted[module]++;
+        return remaining - 1;
     }
 
-    /** Total synthetic actions dropped for one module because a cap was hit (diagnostics). */
+    private int countWithinWindow(long nowNanos) {
+        int count = 0;
+        for (int i = 0; i < recentCount; i++) {
+            if (nowNanos - recent[i] < WINDOW_NANOS) count++;
+        }
+        return count;
+    }
+
+    private void record(long nowNanos) {
+        recent[recentHead] = nowNanos;
+        recentHead = (recentHead + 1) % MAX_PER_SECOND_GLOBAL;
+        if (recentCount < MAX_PER_SECOND_GLOBAL) recentCount++;
+    }
+
+    private void clearPending(int module) {
+        requested[module] = 0;
+        guards[module] = null;
+        emitters[module] = null;
+    }
+
+    /** Clear all pending requests and rolling history on disconnect or world replacement. */
+    public void resetAll() {
+        Arrays.fill(requested, 0);
+        Arrays.fill(guards, null);
+        Arrays.fill(emitters, null);
+        Arrays.fill(recent, 0L);
+        recentCount = 0;
+        recentHead = 0;
+    }
+
     public long dropped(Module module) {
         return dropped[module.ordinal()];
     }
 
-    /** Total synthetic actions dropped across both modules (diagnostics / tests). */
     public long dropped() {
         return dropped[0] + dropped[1];
     }
 
-    /** Highest number of synthetic actions ever allowed within a single tick (diagnostics). */
     public int maxInOneTick() {
         return maxInOneTick;
+    }
+
+    private static void notifyBudgetRejected(Module module, int count) {
+        for (int i = 0; i < count; i++) {
+            if (module == Module.LEFT) DebugStats.onAutoLeftBudgetRejected();
+            else DebugStats.onAutoRightBudgetRejected();
+        }
+    }
+
+    private static void notifyGateRejected(Module module, int count) {
+        for (int i = 0; i < count; i++) {
+            if (module == Module.LEFT) DebugStats.onAutoLeftGateRejected();
+            else DebugStats.onAutoRightGateRejected();
+        }
+    }
+
+    private static void notifyTickPulses(Module module, int count) {
+        if (module == Module.LEFT) DebugStats.onAutoLeftTickPulses(count);
+        else DebugStats.onAutoRightTickPulses(count);
     }
 }
