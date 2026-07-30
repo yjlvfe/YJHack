@@ -41,7 +41,7 @@ jobs:
           if-no-files-found: error
 
   publish_release:
-    if: github.event_name == 'pull_request' && github.head_ref == 'release/publish-v1.0.1-hardened-20260730'
+    if: github.event_name == 'pull_request' && github.head_ref == 'release/publish-v1.0.2-aimfix-20260730'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -71,7 +71,7 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v1.0.1-hardened-20260730
+          RELEASE_TAG: v1.0.2-aimfix-20260730
           RELEASE_TARGET: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
@@ -85,6 +85,6 @@ jobs:
               YJHack-1.21.5.jar \
               YJHack-1.21.5.jar.sha256 \
               --target "$RELEASE_TARGET" \
-              --title "YJHack 1.21.5 — Hardened Release" \
-              --notes "Verified hardened build for Minecraft 1.21.5. Built on Java 21 with Gradle 8.14.4 after clean compilation and the complete automated test suite. Includes the global 40 synthetic-actions/second safety budget, AutoLeft and AutoRight input fixes, vanilla hold/charge handling, AimAssist focus/FOV/visibility hardening, NinjaBridge world-state resets, Tracker HUD bounds, and build-pipeline reliability fixes."
+              --title "YJHack 1.21.5 — AimAssist Fix" \
+              --notes "Verified build for Minecraft 1.21.5. Fixes the AimAssist regression where looking at ordinary terrain immediately cancelled target acquisition. AimAssist now distinguishes normal terrain under the crosshair from deliberate continuous block mining using a short same-block intent delay, while retaining fresh line-of-sight, FOV, focus, release, and world-reset protections. Built with Java 21 and Gradle 8.14.4 after clean tests and compilation."
           fi
