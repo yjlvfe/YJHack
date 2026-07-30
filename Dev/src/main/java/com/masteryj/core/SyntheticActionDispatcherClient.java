@@ -20,7 +20,7 @@ public final class SyntheticActionDispatcherClient implements ClientModInitializ
                 ActionBudget.INSTANCE.resetAll();
                 return;
             }
-            ActionBudget.INSTANCE.flush(System.nanoTime());
+            ActionBudget.INSTANCE.flush(client, System.nanoTime());
         });
     }
 }
