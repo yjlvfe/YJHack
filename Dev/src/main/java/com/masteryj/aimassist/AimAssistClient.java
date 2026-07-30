@@ -2,14 +2,8 @@ package com.masteryj.aimassist;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
 import com.masteryj.core.DebugStats;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Random;
+import com.masteryj.core.GameplayGate;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -20,7 +14,6 @@ import net.minecraft.util.Formatting;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -30,438 +23,372 @@ import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.util.Random;
+
 public final class AimAssistClient implements ClientModInitializer {
-   private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AimAssist");
-   private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-   private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
-   private static final int CURRENT_CONFIG_VERSION = 6;
-   private static final int MAX_VISIBILITY_CACHE = 64;
-   private final Random random = new Random();
-   private final Map<Integer, Vec3d> lastVisiblePointCache = new HashMap<>();
-   private World lastWorld;
-   public static AimAssistClient.Config config;
-   public static boolean enabled = false;
-   public static int toggleKeyCode = -1;
-   public static float speed = 0.24F;
-   public static float smoothness = 0.35F;
-   public static float fov = 70.0F;
-   private long lastConfigCheckAtNanos = Long.MIN_VALUE;
-   private FileTime lastKnownConfigWriteTime;
-   private PlayerEntity target;
-   private BlockPos blockBreakFocusPos;
-   private long blockBreakFocusStartedAtNanos = 0L;
-   private boolean toggleKeyWasDown = false;
-   private float targetOffsetX = 0.0F;
-   private float targetOffsetY = 0.0F;
-   private float offsetVelocityX = 0.0F;
-   private float offsetVelocityY = 0.0F;
-   private long lastOffsetUpdateNanos = Long.MIN_VALUE;
 
-   public void onInitializeClient() {
-      config = this.loadConfig();
-      applyRuntimeConfig(config);
-      ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("AimAssist", this::tickAimAssist));
-   }
+    private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AimAssist");
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
+    private static final int CURRENT_CONFIG_VERSION = 6;
+    private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
+    private static final double ACQUIRE_DISTANCE_SQUARED = 20.25D;
+    private static final double KEEP_DISTANCE_SQUARED = 17.64D;
+    private static final double APPLY_DISTANCE_SQUARED = 12.25D;
 
-   private void tickAimAssist(MinecraftClient client) {
-      this.maybeReloadConfig();
-      this.handleToggleKey(client);
-      // World change (server switch / dimension): drop the visibility cache and target so
-      // no stale entity-id -> point mapping or player reference carries into the new world.
-      if (client.world != this.lastWorld) {
-         this.lastWorld = client.world;
-         this.clearTarget();
-         this.clearBlockBreakFocus();
-      }
-      if (enabled && client.player != null && client.world != null && client.currentScreen == null) {
-         long now = System.nanoTime();
-         boolean leftDown = this.isMouseDown(client, 0);
-         if (!client.player.isAlive() || client.player.isSpectator()) {
-            this.clearTarget();
-            this.clearBlockBreakFocus();
-         } else if (this.isActualBlockBreaking(client, leftDown, now)) {
-            this.clearTarget();
-         } else {
-            if (!this.isTargetValid(client, this.target, true, now)) {
-               this.target = null;
+    private final Random random = new Random();
+    private World lastWorld;
+    private PlayerEntity target;
+    private long lastConfigCheckAtNanos = Long.MIN_VALUE;
+    private FileTime lastKnownConfigWriteTime;
+    private boolean toggleKeyWasDown;
+    private boolean requireToggleRelease;
+    private float targetOffsetX;
+    private float targetOffsetY;
+    private float offsetVelocityX;
+    private float offsetVelocityY;
+    private long lastOffsetUpdateNanos = Long.MIN_VALUE;
+
+    public static Config config;
+    public static boolean enabled = false;
+    public static int toggleKeyCode = -1;
+    public static float speed = 0.24F;
+    public static float smoothness = 0.35F;
+    public static float fov = 70.0F;
+
+    @Override
+    public void onInitializeClient() {
+        config = loadConfig();
+        applyRuntimeConfig(config);
+        ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("AimAssist", this::tickAimAssist));
+    }
+
+    private void tickAimAssist(MinecraftClient client) {
+        maybeReloadConfig();
+        handleToggleKey(client);
+
+        if (client.world != lastWorld) {
+            lastWorld = client.world;
+            clearTarget();
+        }
+
+        if (!enabled || !isInActiveGameplay(client) || !isMouseDown(client, 0)) {
+            clearTarget();
+            return;
+        }
+
+        // Never steer while the user is mining or starting to mine a block.
+        if (client.crosshairTarget instanceof BlockHitResult) {
+            clearTarget();
+            return;
+        }
+
+        long now = System.nanoTime();
+        if (!isTargetValid(client, target, KEEP_DISTANCE_SQUARED, fov * 1.10F)) {
+            target = null;
+        }
+
+        if (target == null) {
+            if (client.crosshairTarget instanceof EntityHitResult entityHit
+                    && entityHit.getEntity() instanceof PlayerEntity direct
+                    && isTargetValid(client, direct, ACQUIRE_DISTANCE_SQUARED, fov)) {
+                target = direct;
             }
+            if (target == null) target = findBestTarget(client);
+        }
 
-            if (this.target == null) {
-               if (!leftDown) {
-                  return;
-               }
+        if (target == null) return;
+        AimSample sample = getAimSample(client, target);
+        if (sample == null || sample.distanceSquared() > APPLY_DISTANCE_SQUARED
+                || !insideFov(client, sample, fov * 1.10F)) {
+            clearTarget();
+            return;
+        }
 
-               if (client.crosshairTarget instanceof EntityHitResult entityHitResult
-                  && entityHitResult.getEntity() instanceof PlayerEntity playerTarget
-                  && this.isTargetValid(client, playerTarget, false, now)) {
-                  this.target = playerTarget;
-               }
+        applyAimAssist(client, sample, now);
+    }
 
-               if (this.target == null) {
-                  this.target = this.findBestTarget(client, now);
-               }
+    private boolean isInActiveGameplay(MinecraftClient client) {
+        boolean hasPlayer = client.player != null;
+        boolean hasWorld = client.world != null;
+        return GameplayGate.active(hasPlayer, hasWorld,
+                client.currentScreen != null, client.isWindowFocused(), client.mouse.isCursorLocked(),
+                hasPlayer && client.player.isAlive(), hasPlayer && client.player.isSpectator());
+    }
+
+    private PlayerEntity findBestTarget(MinecraftClient client) {
+        PlayerEntity best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (PlayerEntity candidate : client.world.getPlayers()) {
+            if (!isTargetValid(client, candidate, ACQUIRE_DISTANCE_SQUARED, fov)) continue;
+            AimSample sample = getAimSample(client, candidate);
+            if (sample == null || !insideFov(client, sample, fov)) continue;
+
+            float yaw = Math.abs(MathHelper.wrapDegrees(sample.angles().yaw() - client.player.getYaw()));
+            float pitch = Math.abs(MathHelper.wrapDegrees(sample.angles().pitch() - client.player.getPitch()));
+            double score = yaw * 1.65D + pitch * 1.10D + Math.sqrt(sample.distanceSquared()) * 3.8D;
+            if (score < bestScore) {
+                bestScore = score;
+                best = candidate;
             }
+        }
+        return best;
+    }
 
-            if (this.target != null) {
-               AimAssistClient.AimSample sample = this.getAimSample(client, this.target);
-               if (sample != null && !(sample.distanceSquared() > 12.25)) {
-                  this.applyAimAssist(client, sample);
-               } else {
-                  this.clearTarget();
-               }
-            }
-         }
-      } else {
-         this.clearTarget();
-      }
-   }
-
-   private PlayerEntity findBestTarget(MinecraftClient client, long now) {
-      PlayerEntity bestTarget = null;
-      double bestScore = Double.MAX_VALUE;
-
-      for (PlayerEntity candidate : client.world.getPlayers()) {
-         if (this.isTargetValid(client, candidate, false, now)) {
-            AimAssistClient.AimSample sample = this.getAimSample(client, candidate);
-            if (sample != null && !(sample.distanceSquared() > 20.25)) {
-               float yawDifference = Math.abs(MathHelper.wrapDegrees(sample.angles().yaw() - client.player.getYaw()));
-               float pitchDifference = Math.abs(MathHelper.wrapDegrees(sample.angles().pitch() - client.player.getPitch()));
-               if (!(yawDifference > fov) && !(pitchDifference > fov)) {
-                  double score = yawDifference * 1.65 + pitchDifference * 1.1 + Math.sqrt(sample.distanceSquared()) * 3.8;
-                  if (score < bestScore) {
-                     bestScore = score;
-                     bestTarget = candidate;
-                  }
-               }
-            }
-         }
-      }
-
-      return bestTarget;
-   }
-
-   private boolean isTargetValid(MinecraftClient client, PlayerEntity player, boolean keepCurrentTarget, long now) {
-      if (client.player != null
-         && player != null
-         && player != client.player
-         && !this.isFriendlyTarget(client, player)
-         && player.isAlive()
-         && !player.isSpectator()) {
-         if (client.player.squaredDistanceTo(player) > 23.04) {
+    private boolean isTargetValid(MinecraftClient client, PlayerEntity candidate,
+                                  double maxDistanceSquared, float allowedFov) {
+        if (client.player == null || client.world == null || candidate == null
+                || candidate == client.player || !candidate.isAlive() || candidate.isSpectator()
+                || isFriendlyTarget(client, candidate)
+                || client.player.squaredDistanceTo(candidate) > maxDistanceSquared) {
             return false;
-         } else {
-            AimAssistClient.AimSample sample = this.getAimSample(client, player);
-            if (sample == null || sample.distanceSquared() > 17.64) {
-               return false;
-            } else if (keepCurrentTarget) {
-               return true;
-            } else {
-               float yawDifference = Math.abs(MathHelper.wrapDegrees(sample.angles().yaw() - client.player.getYaw()));
-               float pitchDifference = Math.abs(MathHelper.wrapDegrees(sample.angles().pitch() - client.player.getPitch()));
-               return yawDifference <= fov && pitchDifference <= fov;
+        }
+        AimSample sample = getAimSample(client, candidate);
+        return sample != null && sample.distanceSquared() <= maxDistanceSquared
+                && insideFov(client, sample, allowedFov);
+    }
+
+    private boolean insideFov(MinecraftClient client, AimSample sample, float allowedFov) {
+        float yaw = Math.abs(MathHelper.wrapDegrees(sample.angles().yaw() - client.player.getYaw()));
+        float pitch = Math.abs(MathHelper.wrapDegrees(sample.angles().pitch() - client.player.getPitch()));
+        return yaw <= allowedFov && pitch <= allowedFov;
+    }
+
+    private boolean isFriendlyTarget(MinecraftClient client, PlayerEntity candidate) {
+        return client.player != null
+                && (client.player.isTeammate(candidate) || candidate.isTeammate(client.player));
+    }
+
+    private AimSample getAimSample(MinecraftClient client, PlayerEntity candidate) {
+        if (client.player == null || client.world == null || candidate == null) return null;
+        Vec3d start = client.player.getEyePos();
+        Vec3d point = findBestVisibleAimPoint(client, start, candidate);
+        if (point == null) return null;
+        return new AimSample(point, getAimAngles(client, point), start.squaredDistanceTo(point));
+    }
+
+    /** Every candidate point is raycast on every use; no stale through-wall visibility cache. */
+    private Vec3d findBestVisibleAimPoint(MinecraftClient client, Vec3d start, PlayerEntity candidate) {
+        Box box = candidate.getBoundingBox().expand(-0.03D);
+        Vec3d center = box.getCenter();
+        Vec3d chest = new Vec3d(center.x, box.minY + box.getLengthY() * 0.65D, center.z);
+        Vec3d head = new Vec3d(center.x, box.minY + box.getLengthY() * 0.88D, center.z);
+        for (Vec3d point : new Vec3d[]{chest, head, center}) {
+            if (isVisiblePoint(client, start, point)) return point;
+        }
+        return null;
+    }
+
+    private boolean isVisiblePoint(MinecraftClient client, Vec3d start, Vec3d end) {
+        BlockHitResult hit = client.world.raycast(new RaycastContext(
+                start, end, RaycastContext.ShapeType.COLLIDER,
+                RaycastContext.FluidHandling.NONE, client.player));
+        return hit.getType() == HitResult.Type.MISS;
+    }
+
+    private AimAngles getAimAngles(MinecraftClient client, Vec3d point) {
+        Vec3d eye = client.player.getEyePos();
+        double dx = point.x - eye.x;
+        double dy = point.y - eye.y;
+        double dz = point.z - eye.z;
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        if (horizontal <= 1.0E-4D) return new AimAngles(client.player.getYaw(), client.player.getPitch());
+        return new AimAngles(
+                (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0D),
+                (float) (-Math.toDegrees(Math.atan2(dy, horizontal))));
+    }
+
+    private void applyAimAssist(MinecraftClient client, AimSample sample, long now) {
+        updateDynamicOffset(now);
+        float currentYaw = client.player.getYaw();
+        float currentPitch = client.player.getPitch();
+        float targetYaw = sample.angles().yaw() + targetOffsetX;
+        float targetPitch = sample.angles().pitch() + targetOffsetY;
+        float yawDelta = MathHelper.wrapDegrees(targetYaw - currentYaw);
+        float pitchDelta = targetPitch - currentPitch;
+        float baseLerp = MathHelper.clamp(speed * (1.25F - smoothness), 0.005F, 1.0F);
+        float progress = MathHelper.clamp(1.0F - Math.abs(yawDelta) / Math.max(1.0F, fov), 0.0F, 1.0F);
+        float sCurve = progress * progress * (3.0F - 2.0F * progress);
+        float lerp = MathHelper.clamp(baseLerp * (0.6F + sCurve * 0.9F), 0.001F, 1.0F);
+        float jitterX = (random.nextFloat() - 0.5F) * 0.01F;
+        float jitterY = (random.nextFloat() - 0.5F) * 0.01F;
+        float newYaw = currentYaw + yawDelta * lerp + jitterX;
+        float newPitch = currentPitch + pitchDelta * MathHelper.clamp(lerp * 0.82F, 0.001F, 1.0F) + jitterY;
+        client.player.setYaw(newYaw);
+        client.player.setPitch(MathHelper.clamp(newPitch, -90.0F, 90.0F));
+        client.player.setHeadYaw(newYaw);
+        client.player.setBodyYaw(newYaw);
+    }
+
+    private void updateDynamicOffset(long now) {
+        if (lastOffsetUpdateNanos != Long.MIN_VALUE && now - lastOffsetUpdateNanos < 50_000_000L) return;
+        lastOffsetUpdateNanos = now;
+        float accel = 0.06F;
+        offsetVelocityX += (float) (random.nextGaussian() * accel * 0.5D);
+        offsetVelocityY += (float) (random.nextGaussian() * accel * 0.5D);
+        offsetVelocityX *= 0.82F;
+        offsetVelocityY *= 0.82F;
+        targetOffsetX = MathHelper.clamp(targetOffsetX + offsetVelocityX, -0.8F, 0.8F);
+        targetOffsetY = MathHelper.clamp(targetOffsetY + offsetVelocityY, -0.56F, 0.56F);
+    }
+
+    private void clearTarget() {
+        target = null;
+        targetOffsetX = 0.0F;
+        targetOffsetY = 0.0F;
+        offsetVelocityX = 0.0F;
+        offsetVelocityY = 0.0F;
+        lastOffsetUpdateNanos = Long.MIN_VALUE;
+    }
+
+    private boolean isMouseDown(MinecraftClient client, int button) {
+        return client != null && client.getWindow() != null
+                && GLFW.glfwGetMouseButton(client.getWindow().getHandle(), button) == GLFW.GLFW_PRESS;
+    }
+
+    private void handleToggleKey(MinecraftClient client) {
+        int key = normalizeToggleKeyCode(toggleKeyCode);
+        boolean rawDown = key != -1 && isRawBindingPressed(client, key);
+        if (client.currentScreen != null || !client.isWindowFocused()) {
+            if (rawDown) requireToggleRelease = true;
+            toggleKeyWasDown = rawDown;
+            return;
+        }
+        if (requireToggleRelease) {
+            if (!rawDown) {
+                requireToggleRelease = false;
+                toggleKeyWasDown = false;
             }
-         }
-      } else {
-         return false;
-      }
-   }
-
-   private boolean isFriendlyTarget(MinecraftClient client, PlayerEntity target) {
-      return client.player != null && target != null && (client.player.isTeammate(target) || target.isTeammate(client.player));
-   }
-
-   private void applyAimAssist(MinecraftClient client, AimAssistClient.AimSample sample) {
-      float currentYaw = client.player.getYaw();
-      float currentPitch = client.player.getPitch();
-      this.updateDynamicOffset();
-      float targetYaw = sample.angles().yaw() + this.targetOffsetX;
-      float targetPitch = sample.angles().pitch() + this.targetOffsetY;
-      float yawDelta = MathHelper.wrapDegrees(targetYaw - currentYaw);
-      float pitchDelta = targetPitch - currentPitch;
-      float absYawDelta = Math.abs(yawDelta);
-      float baseLerp = MathHelper.clamp(speed * (1.25F - smoothness), 0.005F, 1.0F);
-      float progress = MathHelper.clamp(1.0F - absYawDelta / fov, 0.0F, 1.0F);
-      float sCurveFactor = progress * progress * (3.0F - 2.0F * progress);
-      float stickyLerp = baseLerp * (0.6F + sCurveFactor * 0.9F);
-      float jitterX = (this.random.nextFloat() - 0.5F) * 0.01F;
-      float jitterY = (this.random.nextFloat() - 0.5F) * 0.01F;
-      float newYaw = currentYaw + yawDelta * MathHelper.clamp(stickyLerp, 0.001F, 1.0F) + jitterX;
-      float newPitch = currentPitch + pitchDelta * MathHelper.clamp(stickyLerp * 0.82F, 0.001F, 1.0F) + jitterY;
-      client.player.setYaw(newYaw);
-      client.player.setPitch(MathHelper.clamp(newPitch, -90.0F, 90.0F));
-      client.player.setHeadYaw(newYaw);
-      client.player.setBodyYaw(newYaw);
-   }
-
-   private void updateDynamicOffset() {
-      long now = System.nanoTime();
-      if (this.lastOffsetUpdateNanos == Long.MIN_VALUE || now - this.lastOffsetUpdateNanos >= 50_000_000L) {
-         this.lastOffsetUpdateNanos = now;
-         float maxDrift = 0.8F;
-         float accel = 0.06F;
-         this.offsetVelocityX = this.offsetVelocityX + (float)(this.random.nextGaussian() * accel * 0.5);
-         this.offsetVelocityY = this.offsetVelocityY + (float)(this.random.nextGaussian() * accel * 0.5);
-         this.offsetVelocityX *= 0.82F;
-         this.offsetVelocityY *= 0.82F;
-         this.targetOffsetX = MathHelper.clamp(this.targetOffsetX + this.offsetVelocityX, -maxDrift, maxDrift);
-         this.targetOffsetY = MathHelper.clamp(this.targetOffsetY + this.offsetVelocityY, -maxDrift * 0.7F, maxDrift * 0.7F);
-      }
-   }
-
-   private AimAssistClient.AimSample getAimSample(MinecraftClient client, PlayerEntity target) {
-      if (client.player != null && client.world != null) {
-         Vec3d start = client.player.getEyePos();
-         Vec3d bestPoint = this.findBestVisibleAimPoint(client, start, target);
-         return bestPoint == null ? null : new AimAssistClient.AimSample(bestPoint, this.getAimAngles(client, bestPoint), start.squaredDistanceTo(bestPoint));
-      } else {
-         return null;
-      }
-   }
-
-   private Vec3d findBestVisibleAimPoint(MinecraftClient client, Vec3d start, PlayerEntity target) {
-      Box hitBox = target.getBoundingBox().expand(-0.03);
-      Vec3d center = hitBox.getCenter();
-      Vec3d headPoint = new Vec3d(center.x, hitBox.minY + hitBox.getLengthY() * 0.88, center.z);
-      Vec3d chestPoint = new Vec3d(center.x, hitBox.minY + hitBox.getLengthY() * 0.65, center.z);
-      Vec3d cached = this.lastVisiblePointCache.get(target.getId());
-      if (cached != null && cached.squaredDistanceTo(chestPoint) < 0.25) {
-         return cached;
-      } else {
-         Vec3d[] priorityPoints = new Vec3d[]{chestPoint, headPoint, center};
-
-         for (Vec3d point : priorityPoints) {
-            if (this.isVisiblePoint(client, start, point)) {
-               // Bound the cache: if it is full and this is a new entity, drop it wholesale
-               // (cheap, and it simply re-raycasts next tick — no aim-feel change).
-               if (this.lastVisiblePointCache.size() >= MAX_VISIBILITY_CACHE
-                       && !this.lastVisiblePointCache.containsKey(target.getId())) {
-                  this.lastVisiblePointCache.clear();
-               }
-               this.lastVisiblePointCache.put(target.getId(), point);
-               return point;
-            }
-         }
-
-         this.lastVisiblePointCache.remove(target.getId());
-         return null;
-      }
-   }
-
-   private AimAssistClient.AimAngles getAimAngles(MinecraftClient client, Vec3d targetPoint) {
-      Vec3d eyePos = client.player.getEyePos();
-      double dx = targetPoint.x - eyePos.x;
-      double dy = targetPoint.y - eyePos.y;
-      double dz = targetPoint.z - eyePos.z;
-      double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
-      if (horizontalDistance <= 1.0E-4) {
-         return new AimAssistClient.AimAngles(client.player.getYaw(), client.player.getPitch());
-      } else {
-         float targetYaw = (float)(Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
-         float targetPitch = (float)(-Math.toDegrees(Math.atan2(dy, horizontalDistance)));
-         return new AimAssistClient.AimAngles(targetYaw, targetPitch);
-      }
-   }
-
-   private boolean isVisiblePoint(MinecraftClient client, Vec3d start, Vec3d end) {
-      BlockHitResult hitResult = client.world
-         .raycast(new RaycastContext(start, end, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, client.player));
-      return hitResult.getType() == HitResult.Type.MISS;
-   }
-
-   private boolean isActualBlockBreaking(MinecraftClient client, boolean leftDown, long now) {
-      if (leftDown && client.crosshairTarget instanceof BlockHitResult blockHitResult) {
-         BlockPos currentPos = blockHitResult.getBlockPos().toImmutable();
-         if (!currentPos.equals(this.blockBreakFocusPos)) {
-            this.blockBreakFocusPos = currentPos;
-            this.blockBreakFocusStartedAtNanos = now;
-            return false;
-         } else {
-            return now - this.blockBreakFocusStartedAtNanos >= 500_000_000L;
-         }
-      } else {
-         this.clearBlockBreakFocus();
-         return false;
-      }
-   }
-
-   private void clearBlockBreakFocus() {
-      this.blockBreakFocusPos = null;
-      this.blockBreakFocusStartedAtNanos = 0L;
-   }
-
-   private boolean isMouseDown(MinecraftClient client, int button) {
-      return GLFW.glfwGetMouseButton(client.getWindow().getHandle(), button) == 1;
-   }
-
-   private void clearTarget() {
-      this.target = null;
-      this.targetOffsetX = 0.0F;
-      this.targetOffsetY = 0.0F;
-      this.offsetVelocityX = 0.0F;
-      this.offsetVelocityY = 0.0F;
-      this.lastVisiblePointCache.clear();
-   }
-
-   private void handleToggleKey(MinecraftClient client) {
-      int keyCode = normalizeToggleKeyCode(toggleKeyCode);
-      if (keyCode == -1) {
-         this.toggleKeyWasDown = false;
-      } else {
-         boolean keyDown = isToggleBindingPressed(client, keyCode);
-         if (keyDown && !this.toggleKeyWasDown) {
+            return;
+        }
+        if (rawDown && !toggleKeyWasDown) {
             enabled = !enabled;
             config.enabled = enabled;
-            this.saveConfig(config);
-            if (!enabled) {
-               this.clearTarget();
-               this.clearBlockBreakFocus();
-            }
+            saveConfig(config);
+            if (!enabled) clearTarget();
+            sendToggleMessage(client, enabled);
+        }
+        toggleKeyWasDown = rawDown;
+    }
 
-            this.sendToggleMessage(client, enabled, "AimAssist " + (enabled ? "enabled" : "disabled"));
-         }
+    private void sendToggleMessage(MinecraftClient client, boolean on) {
+        if (client.player == null) return;
+        Text text = Text.literal("AimAssist " + (on ? "enabled" : "disabled"))
+                .formatted(on ? Formatting.GREEN : Formatting.RED);
+        client.player.sendMessage(text, true);
+    }
 
-         this.toggleKeyWasDown = keyDown;
-      }
-   }
-
-   private void sendToggleMessage(MinecraftClient client, boolean enabled, String message) {
-      if (client.player != null) {
-         Text text = Text.literal(message).formatted(enabled ? Formatting.GREEN : Formatting.RED);
-         client.player.sendMessage(text, false);
-         client.player.sendMessage(text, true);
-      }
-   }
-
-   private void maybeReloadConfig() {
-      long now = System.nanoTime();
-      if (this.lastConfigCheckAtNanos == Long.MIN_VALUE || now - this.lastConfigCheckAtNanos >= 5_000_000_000L) {
-         this.lastConfigCheckAtNanos = now;
-
-         try {
-            if (!Files.exists(CONFIG_PATH)) {
-               return;
-            }
-
-            FileTime currentWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
-            if (this.lastKnownConfigWriteTime != null && currentWriteTime.equals(this.lastKnownConfigWriteTime)) {
-               return;
-            }
-
-            config = this.loadConfig();
+    private void maybeReloadConfig() {
+        long now = System.nanoTime();
+        if (lastConfigCheckAtNanos != Long.MIN_VALUE
+                && now - lastConfigCheckAtNanos < CONFIG_RELOAD_INTERVAL_NANOS) return;
+        lastConfigCheckAtNanos = now;
+        try {
+            if (!Files.exists(CONFIG_PATH)) return;
+            FileTime wt = Files.getLastModifiedTime(CONFIG_PATH);
+            if (lastKnownConfigWriteTime != null && wt.equals(lastKnownConfigWriteTime)) return;
+            config = loadConfig();
             applyRuntimeConfig(config);
-         } catch (IOException e) {
-            LOGGER.warn("AimAssist config reload failed: {}", e.getMessage());
-         }
-      }
-   }
+        } catch (IOException e) {
+            LOGGER.warn("AimAssist config reload failed", e);
+        }
+    }
 
-   private AimAssistClient.Config loadConfig() {
-      try {
-         if (Files.exists(CONFIG_PATH)) {
-            AimAssistClient.Config loaded = GSON.fromJson(Files.readString(CONFIG_PATH), AimAssistClient.Config.class);
-            if (loaded != null) {
-               // Graceful migration: never delete the user's file on an older version.
-               loaded.normalize();
-               this.lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
-               return loaded;
+    private Config loadConfig() {
+        try {
+            if (Files.exists(CONFIG_PATH)) {
+                Config loaded = GSON.fromJson(Files.readString(CONFIG_PATH), Config.class);
+                if (loaded != null) {
+                    loaded.normalize();
+                    lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
+                    return loaded;
+                }
             }
-         }
-      } catch (Exception e) {
-         LOGGER.warn("AimAssist config unreadable ({}); using safe defaults", e.toString());
-      }
+        } catch (Exception e) {
+            LOGGER.warn("AimAssist config unreadable; using safe defaults", e);
+        }
+        Config fresh = new Config();
+        fresh.normalize();
+        saveConfig(fresh);
+        return fresh;
+    }
 
-      AimAssistClient.Config fresh = new AimAssistClient.Config();
-      fresh.normalize();
-      this.saveConfig(fresh);
-      return fresh;
-   }
+    private void saveConfig(Config cfg) {
+        if (cfg == null) return;
+        cfg.normalize();
+        applyRuntimeConfig(cfg);
+        try {
+            Files.createDirectories(CONFIG_PATH.getParent());
+            Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
+            lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
+        } catch (IOException e) {
+            LOGGER.warn("AimAssist config save failed", e);
+        }
+    }
 
-   private void saveConfig(AimAssistClient.Config cfg) {
-      try {
-         cfg.normalize();
-         applyRuntimeConfig(cfg);
-         Files.createDirectories(CONFIG_PATH.getParent());
-         Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
-         this.lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
-      } catch (IOException e) {
-         LOGGER.warn("AimAssist config save failed: {}", e.getMessage());
-      }
-   }
+    public static void saveConfigStatic(Config cfg) {
+        if (cfg == null) return;
+        cfg.normalize();
+        applyRuntimeConfig(cfg);
+        try {
+            Files.createDirectories(CONFIG_PATH.getParent());
+            Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
+        } catch (IOException e) {
+            LOGGER.warn("AimAssist config save failed", e);
+        }
+    }
 
-   public static void applyRuntimeConfig(AimAssistClient.Config cfg) {
-      if (cfg != null) {
-         config = cfg;
-         enabled = cfg.enabled;
-         toggleKeyCode = cfg.toggleKeyCode;
-         speed = cfg.speed;
-         smoothness = cfg.smoothness;
-         fov = cfg.fov;
-      }
-   }
+    public static void applyRuntimeConfig(Config cfg) {
+        if (cfg == null) return;
+        config = cfg;
+        enabled = cfg.enabled;
+        toggleKeyCode = cfg.toggleKeyCode;
+        speed = cfg.speed;
+        smoothness = cfg.smoothness;
+        fov = cfg.fov;
+    }
 
-   /** Typed save used by the GUI: validates, applies live, and writes the file. */
-   public static void saveConfigStatic(AimAssistClient.Config cfg) {
-      if (cfg == null) return;
-      cfg.normalize();
-      applyRuntimeConfig(cfg);
-      try {
-         Files.createDirectories(CONFIG_PATH.getParent());
-         Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
-      } catch (IOException e) {
-         LOGGER.warn("AimAssist config save failed: {}", e.getMessage());
-      }
-   }
+    private static int normalizeToggleKeyCode(int key) {
+        if (key >= 1000) return key;
+        return key > 0 ? key : -1;
+    }
 
-   private static int normalizeToggleKeyCode(int keyCode) {
-      if (keyCode >= 1000) {
-         return keyCode;
-      } else {
-         return keyCode <= 0 ? -1 : keyCode;
-      }
-   }
+    private static boolean isRawBindingPressed(MinecraftClient client, int key) {
+        if (client == null || client.getWindow() == null) return false;
+        long handle = client.getWindow().getHandle();
+        if (key >= 1000) return GLFW.glfwGetMouseButton(handle, key - 1000) == GLFW.GLFW_PRESS;
+        return GLFW.glfwGetKey(handle, key) == GLFW.GLFW_PRESS;
+    }
 
-   private static boolean isToggleBindingPressed(MinecraftClient client, int keyCode) {
-      if (client.currentScreen != null || !client.isWindowFocused()) {
-         return false;
-      } else {
-         return keyCode >= 1000
-            ? GLFW.glfwGetMouseButton(client.getWindow().getHandle(), keyCode - 1000) == 1
-            : GLFW.glfwGetKey(client.getWindow().getHandle(), keyCode) == 1;
-      }
-   }
+    private record AimAngles(float yaw, float pitch) {
+    }
 
-   private record AimAngles(float yaw, float pitch) {
-   }
+    private record AimSample(Vec3d point, AimAngles angles, double distanceSquared) {
+    }
 
-   private record AimSample(Vec3d point, AimAssistClient.AimAngles angles, double distanceSquared) {
-   }
+    public static final class Config {
+        public int configVersion = CURRENT_CONFIG_VERSION;
+        public boolean enabled = false;
+        public int toggleKeyCode = -1;
+        public float speed = 0.24F;
+        public float smoothness = 0.35F;
+        public float fov = 70.0F;
 
-   public static final class Config {
-      public int configVersion = 6;
-      public boolean enabled = false;
-      public int toggleKeyCode = -1;
-      public float speed = 0.24F;
-      public float smoothness = 0.35F;
-      public float fov = 70.0F;
+        public void normalize() {
+            if (configVersion < CURRENT_CONFIG_VERSION) configVersion = CURRENT_CONFIG_VERSION;
+            speed = sanitize(speed, 0.24F, 0.01F, 1.0F);
+            smoothness = sanitize(smoothness, 0.35F, 0.0F, 1.0F);
+            fov = sanitize(fov, 70.0F, 10.0F, 180.0F);
+            toggleKeyCode = normalizeToggleKeyCode(toggleKeyCode);
+        }
 
-      public void normalize() {
-         if (this.configVersion < CURRENT_CONFIG_VERSION) {
-            this.configVersion = CURRENT_CONFIG_VERSION;
-         }
-
-         // Clamp to the same bounds the GUI enforces so a corrupt/hand-edited
-         // file can never produce NaN rotations or runaway turn speeds.
-         this.speed = sanitize(this.speed, 0.24F, 0.01F, 1.0F);
-         this.smoothness = sanitize(this.smoothness, 0.35F, 0.0F, 1.0F);
-         this.fov = sanitize(this.fov, 70.0F, 10.0F, 180.0F);
-         this.toggleKeyCode = AimAssistClient.normalizeToggleKeyCode(this.toggleKeyCode);
-      }
-
-      private static float sanitize(float value, float fallback, float min, float max) {
-         if (Float.isNaN(value) || Float.isInfinite(value)) {
-            return fallback;
-         }
-         return Math.max(min, Math.min(max, value));
-      }
-   }
+        private static float sanitize(float value, float fallback, float min, float max) {
+            if (Float.isNaN(value) || Float.isInfinite(value)) return fallback;
+            return Math.max(min, Math.min(max, value));
+        }
+    }
 }
