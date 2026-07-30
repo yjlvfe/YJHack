@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.masteryj.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "MinecraftClientInvoker"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
