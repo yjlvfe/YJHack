@@ -47,20 +47,25 @@ tasks.withType(JavaCompile).configureEach {
     it.options.encoding = 'UTF-8'
 }
 
-// The convenience release copy is produced only after compilation and all checks succeed.
-tasks.register('copyJar', Copy) {
+// Use a regular task with an exact output file. A Copy task pointed at the repository root makes
+// Gradle treat the whole checkout as its output directory, which conflicts with sourcesJar.
+def rootConvenienceJar = file('../YJHack-1.21.5.jar')
+tasks.register('copyJar') {
     dependsOn check, remapJar
-    from remapJar.archiveFile
-    into file(project.hasProperty('outputJarDir') ? project.property('outputJarDir') : file('..'))
-    rename { 'YJHack-1.21.5.jar' }
+    inputs.file(remapJar.archiveFile)
+    outputs.file(rootConvenienceJar)
+    doLast {
+        java.nio.file.Files.copy(
+                remapJar.archiveFile.get().asFile.toPath(),
+                rootConvenienceJar.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    }
 }
 
 tasks.named('build') {
     dependsOn copyJar
 }
 
-// Remove only the generated convenience copy. The frozen reference build stays outside the repo.
-def rootConvenienceJar = file('../YJHack-1.21.5.jar')
 clean.doLast {
     rootConvenienceJar.delete()
 }

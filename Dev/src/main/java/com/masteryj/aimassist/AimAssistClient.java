@@ -27,6 +27,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
 
 public final class AimAssistClient implements ClientModInitializer {
@@ -41,6 +43,8 @@ public final class AimAssistClient implements ClientModInitializer {
     private static final double APPLY_DISTANCE_SQUARED = 12.25D;
 
     private final Random random = new Random();
+    /** Fresh for one client tick only: avoids duplicate raycasts without allowing stale visibility. */
+    private final Map<Integer, AimSample> tickSampleCache = new HashMap<>();
     private World lastWorld;
     private PlayerEntity target;
     private long lastConfigCheckAtNanos = Long.MIN_VALUE;
@@ -68,6 +72,7 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     private void tickAimAssist(MinecraftClient client) {
+        tickSampleCache.clear();
         maybeReloadConfig();
         handleToggleKey(client);
 
@@ -81,7 +86,6 @@ public final class AimAssistClient implements ClientModInitializer {
             return;
         }
 
-        // Never steer while the user is mining or starting to mine a block.
         if (client.crosshairTarget instanceof BlockHitResult) {
             clearTarget();
             return;
@@ -126,7 +130,7 @@ public final class AimAssistClient implements ClientModInitializer {
         for (PlayerEntity candidate : client.world.getPlayers()) {
             if (!isTargetValid(client, candidate, ACQUIRE_DISTANCE_SQUARED, fov)) continue;
             AimSample sample = getAimSample(client, candidate);
-            if (sample == null || !insideFov(client, sample, fov)) continue;
+            if (sample == null) continue;
 
             float yaw = Math.abs(MathHelper.wrapDegrees(sample.angles().yaw() - client.player.getYaw()));
             float pitch = Math.abs(MathHelper.wrapDegrees(sample.angles().pitch() - client.player.getPitch()));
@@ -165,13 +169,18 @@ public final class AimAssistClient implements ClientModInitializer {
 
     private AimSample getAimSample(MinecraftClient client, PlayerEntity candidate) {
         if (client.player == null || client.world == null || candidate == null) return null;
+        int id = candidate.getId();
+        if (tickSampleCache.containsKey(id)) return tickSampleCache.get(id);
+
         Vec3d start = client.player.getEyePos();
         Vec3d point = findBestVisibleAimPoint(client, start, candidate);
-        if (point == null) return null;
-        return new AimSample(point, getAimAngles(client, point), start.squaredDistanceTo(point));
+        AimSample sample = point == null
+                ? null
+                : new AimSample(point, getAimAngles(client, point), start.squaredDistanceTo(point));
+        tickSampleCache.put(id, sample);
+        return sample;
     }
 
-    /** Every candidate point is raycast on every use; no stale through-wall visibility cache. */
     private Vec3d findBestVisibleAimPoint(MinecraftClient client, Vec3d start, PlayerEntity candidate) {
         Box box = candidate.getBoundingBox().expand(-0.03D);
         Vec3d center = box.getCenter();
