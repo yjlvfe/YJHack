@@ -6,17 +6,18 @@ import com.masteryj.core.ActionBudget;
 import com.masteryj.core.ClickScheduler;
 import com.masteryj.core.DebugStats;
 import com.masteryj.core.GameplayGate;
+import com.masteryj.core.PhysicalKeyBinding;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.util.InputUtil;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.world.World;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,15 +33,13 @@ public final class AutoRightClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoRight");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoright.json");
-    private static final int CURRENT_CONFIG_VERSION = 5;
+    private static final int CURRENT_CONFIG_VERSION = 6;
     private static final int MAX_SAFE_CPS = ClickScheduler.MAX_CPS;
     private static final int DEFAULT_MIN_CPS = 8;
     private static final int DEFAULT_MAX_CPS = 10;
     private static final int LEGACY_DEFAULT_MIN_CPS = 14;
     private static final int LEGACY_DEFAULT_MAX_CPS = 20;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
-    private static final long BLOCK_HOLD_DELAY_NANOS = 10_000_000L;
-    private static final InputUtil.Key RIGHT_MOUSE = InputUtil.Type.MOUSE.createFromCode(1);
 
     private final Random random = new Random();
     private final ClickScheduler scheduler = new ClickScheduler();
@@ -50,10 +49,10 @@ public final class AutoRightClient implements ClientModInitializer {
     public static boolean blockMode = true;
     public static int toggleKeyCode = -1;
 
+    private World lastWorld;
     private boolean rightWasDown;
     private boolean requireRelease;
     private boolean pressInvalidated;
-    private long rightPressedAtNanos;
     private int pressedSlot = -1;
     private Item pressedItem;
     private RightClickPolicy.Kind pressedKind = RightClickPolicy.Kind.PASS_THROUGH;
@@ -74,25 +73,29 @@ public final class AutoRightClient implements ClientModInitializer {
 
         boolean mouseDown = isMouseDown(client, 1);
         boolean rising = mouseDown && !rightWasDown;
-        boolean activeGameplay = isInActiveGameplay(client);
 
+        if (client == null || client.world != lastWorld) {
+            lastWorld = client == null ? null : client.world;
+            requireRelease = mouseDown;
+            rightWasDown = mouseDown;
+            resetSession();
+            return;
+        }
+
+        boolean activeGameplay = isInActiveGameplay(client);
         if (DebugStats.ENABLED) {
             DebugStats.setAutoRightConfiguredCps(config == null ? 0 : config.minCps,
                     config == null ? 0 : config.maxCps);
             if (rising) DebugStats.onAutoRightPhysicalPress();
         }
 
-        // Disabled or gated automation must never release the player's real use key. This preserves
-        // ordinary long holds for food, bows, shields, blocks and every other vanilla item.
         if (!enabled || !activeGameplay) {
             if (mouseDown) requireRelease = true;
-            resetPress();
             rightWasDown = mouseDown;
+            resetSession();
             return;
         }
 
-        // Wait for a fresh press after a menu, focus loss, disable, death or world transition, but
-        // leave the current physical hold entirely owned by vanilla.
         if (requireRelease) {
             resetPress();
             if (!mouseDown) {
@@ -110,13 +113,11 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        long now = System.nanoTime();
         ItemStack held = client.player == null ? ItemStack.EMPTY : client.player.getMainHandStack();
         int currentSlot = client.player == null ? -1 : client.player.getInventory().getSelectedSlot();
         Item currentItem = held.isEmpty() ? null : held.getItem();
 
         if (rising) {
-            rightPressedAtNanos = now;
             pressedSlot = currentSlot;
             pressedItem = currentItem;
             pressedKind = RightClickPolicy.classify(held, client.player);
@@ -124,7 +125,7 @@ public final class AutoRightClient implements ClientModInitializer {
             scheduler.clear();
             ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
             rightWasDown = true;
-            // Vanilla owns the first physical use. Do not inject a duplicate in this tick.
+            // Vanilla owns the physical first use.
             return;
         }
 
@@ -132,68 +133,63 @@ public final class AutoRightClient implements ClientModInitializer {
             pressInvalidated = true;
         }
 
-        // Holding the key while changing slot/item must not activate the replacement item.
+        // A held press may never activate a replacement item after a slot/item change.
         if (pressInvalidated) {
             if (shouldSuppressVanillaHold(enabled, activeGameplay, requireRelease, true, pressedKind)) {
-                suppressUseKey();
+                suppressUseKey(client);
             }
-            scheduler.clear();
-            ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
+            resetCadence();
             rightWasDown = true;
             return;
         }
 
         switch (pressedKind) {
-            case SINGLE_PRESS -> handleSinglePress(activeGameplay);
-            case BLOCK -> handleBlockHold(client, now);
+            case SINGLE_PRESS -> handleSinglePress(client, activeGameplay);
+            case BLOCK -> handleBlockHold(client);
             case PASS_THROUGH -> passThrough();
         }
 
         rightWasDown = true;
     }
 
-    private void handleSinglePress(boolean activeGameplay) {
-        // Vanilla used the item on the rising edge. Only discrete single-press items are suppressed
-        // while held; normal charge/use items and blocks retain their vanilla long-hold state.
+    private void handleSinglePress(MinecraftClient client, boolean activeGameplay) {
         if (shouldSuppressVanillaHold(enabled, activeGameplay, requireRelease, false, pressedKind)) {
-            suppressUseKey();
+            suppressUseKey(client);
         }
-        scheduler.clear();
-        ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
+        resetCadence();
         DebugStats.onSinglePressSuppressed();
     }
 
-    private void handleBlockHold(MinecraftClient client, long now) {
+    private void handleBlockHold(MinecraftClient client) {
         if (!blockMode) {
             passThrough();
             return;
         }
 
-        // Never clear the real use key for blocks. Vanilla remains authoritative for uninterrupted
-        // hold behaviour; synthetic attempts only supplement it and Minecraft's own cooldown still
-        // decides whether each doItemUse() call is accepted.
-        if (now - rightPressedAtNanos < BLOCK_HOLD_DELAY_NANOS) return;
+        // Only schedule a placement while a real block face is targeted. Dispatch is one queued
+        // vanilla use press in the next tick; no direct doItemUse calls and never two predictions
+        // against the same stale hit result in one tick.
+        if (!(client.crosshairTarget instanceof BlockHitResult)) {
+            resetCadence();
+            return;
+        }
 
         int pulses = scheduler.pulsesThisTick(pickCps());
         if (pulses <= 0) return;
 
         ActionBudget.INSTANCE.request(ActionBudget.Module.RIGHT, pulses,
                 () -> mayEmitBlock(client),
-                () -> {
-                    // Unit-test fallback. Runtime dispatch calls MinecraftClient.doItemUse().
-                    KeyBinding.onKeyPressed(RIGHT_MOUSE);
-                    DebugStats.onAutoRightBlockPulse();
-                });
+                () -> PhysicalKeyBinding.queuePress(client, client.options.useKey));
     }
 
     private void passThrough() {
-        scheduler.clear();
-        ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
-        // Bows, crossbows, tridents, shields, food and other hold items remain fully vanilla.
+        resetCadence();
+        // Bows, crossbows, tridents, shields, food and other held-use items remain fully vanilla.
     }
 
     private boolean mayEmitBlock(MinecraftClient client) {
-        if (!enabled || !blockMode || !isInActiveGameplay(client) || !isMouseDown(client, 1)) {
+        if (!enabled || !blockMode || !isInActiveGameplay(client) || !isMouseDown(client, 1)
+                || !(client.crosshairTarget instanceof BlockHitResult)) {
             return false;
         }
         if (client.player == null) return false;
@@ -219,14 +215,26 @@ public final class AutoRightClient implements ClientModInitializer {
         return initialSlot != currentSlot || initialItem != currentItem;
     }
 
-    private void suppressUseKey() {
-        KeyBinding.setKeyPressed(RIGHT_MOUSE, false);
+    private void suppressUseKey(MinecraftClient client) {
+        if (client != null && client.options != null) client.options.useKey.setPressed(false);
+    }
+
+    private void resetCadence() {
+        scheduler.clear();
+        ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
     }
 
     private void resetPress() {
+        resetCadence();
+        pressedSlot = -1;
+        pressedItem = null;
+        pressedKind = RightClickPolicy.Kind.PASS_THROUGH;
+        pressInvalidated = false;
+    }
+
+    private void resetSession() {
         scheduler.clear();
-        ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
-        rightPressedAtNanos = 0L;
+        ActionBudget.INSTANCE.reset(ActionBudget.Module.RIGHT);
         pressedSlot = -1;
         pressedItem = null;
         pressedKind = RightClickPolicy.Kind.PASS_THROUGH;
@@ -242,8 +250,8 @@ public final class AutoRightClient implements ClientModInitializer {
     }
 
     private boolean isMouseDown(MinecraftClient client, int button) {
-        return client != null && client.getWindow() != null
-                && GLFW.glfwGetMouseButton(client.getWindow().getHandle(), button) == GLFW.GLFW_PRESS;
+        return client != null && client.options != null && button == 1
+                && PhysicalKeyBinding.isPressed(client, client.options.useKey);
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
@@ -263,11 +271,13 @@ public final class AutoRightClient implements ClientModInitializer {
         boolean pressed = isToggleBindingPressed(client, key);
         if (pressed && !toggleKeyWasDown) {
             enabled = !enabled;
-            config.enabled = enabled;
-            saveConfig(config);
+            if (config != null) {
+                config.enabled = enabled;
+                saveConfig(config);
+            }
             if (!enabled) {
                 requireRelease = isMouseDown(client, 1);
-                resetPress();
+                resetSession();
             }
             sendToggleMessage(client, enabled, "AutoRight");
         }
@@ -275,7 +285,7 @@ public final class AutoRightClient implements ClientModInitializer {
     }
 
     private void sendToggleMessage(MinecraftClient client, boolean on, String moduleName) {
-        if (client.player == null) return;
+        if (client == null || client.player == null) return;
         String status = on ? "enabled" : "disabled";
         MutableText text = Text.literal(moduleName + " " + status)
                 .formatted(on ? Formatting.GREEN : Formatting.RED);
@@ -291,13 +301,12 @@ public final class AutoRightClient implements ClientModInitializer {
         public int maxCps = DEFAULT_MAX_CPS;
 
         public void normalize() {
-            if (configVersion < CURRENT_CONFIG_VERSION) {
-                if (minCps == LEGACY_DEFAULT_MIN_CPS && maxCps == LEGACY_DEFAULT_MAX_CPS) {
-                    minCps = DEFAULT_MIN_CPS;
-                    maxCps = DEFAULT_MAX_CPS;
-                }
-                configVersion = CURRENT_CONFIG_VERSION;
+            if (configVersion < 5
+                    && minCps == LEGACY_DEFAULT_MIN_CPS && maxCps == LEGACY_DEFAULT_MAX_CPS) {
+                minCps = DEFAULT_MIN_CPS;
+                maxCps = DEFAULT_MAX_CPS;
             }
+            configVersion = CURRENT_CONFIG_VERSION;
             minCps = Math.max(1, Math.min(MAX_SAFE_CPS, minCps));
             maxCps = Math.max(1, Math.min(MAX_SAFE_CPS, maxCps));
             if (minCps > maxCps) {

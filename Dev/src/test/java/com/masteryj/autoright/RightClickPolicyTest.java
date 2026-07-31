@@ -14,42 +14,34 @@ class RightClickPolicyTest {
     }
 
     @Test
-    void instantDiscreteItemsAreSinglePress() {
+    void knownVanillaDiscreteItemsAreSinglePress() {
         for (String path : new String[]{
                 "fire_charge", "ender_pearl", "snowball", "egg", "splash_potion",
                 "lingering_potion", "experience_bottle", "ender_eye", "wind_charge",
-                "fishing_rod"}) {
-            assertTrue(RightClickPolicy.isSinglePressPath(path), path);
+                "fishing_rod", "bucket", "water_bucket", "lava_bucket"}) {
+            assertTrue(RightClickPolicy.isSinglePressId("minecraft", path), path);
         }
     }
 
     @Test
-    void bucketsAreSinglePress() {
-        assertTrue(RightClickPolicy.isSinglePressPath("bucket"));
-        assertTrue(RightClickPolicy.isSinglePressPath("water_bucket"));
-        assertTrue(RightClickPolicy.isSinglePressPath("lava_bucket"));
-        assertTrue(RightClickPolicy.isSinglePressPath("powder_snow_bucket"));
+    void samePathFromAnotherNamespacePassesThrough() {
+        assertFalse(RightClickPolicy.isSinglePressId("examplemod", "fire_charge"));
+        assertFalse(RightClickPolicy.isSinglePressId("examplemod", "water_bucket"));
     }
 
     @Test
-    void holdAndChargeItemsRemainVanilla() {
+    void holdChargeAndBlockPathsRemainVanilla() {
         for (String path : new String[]{
                 "bow", "crossbow", "trident", "shield", "spyglass", "goat_horn",
-                "apple", "bread"}) {
-            assertFalse(RightClickPolicy.isSinglePressPath(path), path + " must pass through");
-        }
-    }
-
-    @Test
-    void blocksAreNotForcedIntoSinglePress() {
-        for (String path : new String[]{"stone", "dirt", "cobblestone", "oak_planks"}) {
-            assertFalse(RightClickPolicy.isSinglePressPath(path));
+                "apple", "bread", "stone", "dirt", "cobblestone", "oak_planks"}) {
+            assertFalse(RightClickPolicy.isSinglePressPath(path), path);
         }
     }
 
     @Test
     void nullInputsAreSafe() {
         assertFalse(RightClickPolicy.isSinglePressPath(null));
+        assertFalse(RightClickPolicy.isSinglePressId(null, "fire_charge"));
         assertEquals(RightClickPolicy.Kind.PASS_THROUGH,
                 RightClickPolicy.classify(null, null));
     }
