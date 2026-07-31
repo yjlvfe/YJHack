@@ -150,15 +150,22 @@ public final class AutoLeftClient implements ClientModInitializer {
         boolean shouldFire;
         if (jitterEnabled) {
             shouldFire = combatPolicy.shouldEmitFollowUp(
-                    enabled, activeGameplay, physicalDown, entityTargeted)
-                    && clickLimiter.acquire(System.nanoTime(), cps, true);
+                    enabled, activeGameplay, physicalDown, entityTargeted);
+            int pulses = clickLimiter.acquire(System.nanoTime(), cps, true);
+            if (shouldFire && pulses > 0) {
+                for (int i = 0; i < pulses; i++) {
+                    ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+                    leftCpsTracker.recordClick();
+                }
+            }
+            return;
         } else {
             shouldFire = combatPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
                     enabled, activeGameplay, physicalDown, entityTargeted);
-        }
-        if (shouldFire) {
-            ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
-            leftCpsTracker.recordClick();
+            if (shouldFire) {
+                ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+                leftCpsTracker.recordClick();
+            }
         }
     }
 

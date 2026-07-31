@@ -23,38 +23,23 @@ class HumanizedCpsLimiterTest {
     void disabledJitterProducesConsistentRate() {
         HumanizedCpsLimiter limiter = new HumanizedCpsLimiter();
         int emitted = 0;
-        // 5ms ticks for 1 second — gives enough resolution for FixedCpsLimiter
         for (long t = 0; t < 1_000_000_000L; t += 5_000_000L) {
-            if (limiter.acquire(t, 20, false)) emitted++;
+            emitted += limiter.acquire(t, 20, false);
         }
-        // Should be close to 20
         assertTrue(emitted >= 18 && emitted <= 22,
                 "Jitter OFF: expected ~20, got " + emitted);
     }
 
     @Test
     void enabledJitterAveragesToTarget() {
+        // Simulates 50ms ticks (20/sec game loop)
         HumanizedCpsLimiter limiter = new HumanizedCpsLimiter();
-        int[] perSecond = new int[5];
-        int sec = 0;
         int clicks = 0;
-
-        for (long t = 0; t < 5_000_000_000L && sec < 5; t += 1_000_000L) {
-            int currentSec = (int) (t / 1_000_000_000L);
-            if (currentSec != sec) {
-                perSecond[sec] = clicks;
-                clicks = 0;
-                sec = currentSec;
-            }
-            if (limiter.acquire(t, 20, true)) clicks++;
+        for (long t = 0; t < 5_000_000_000L; t += 50_000_000L) {
+            clicks += limiter.acquire(t, 20, true);
         }
-
-        long total = 0;
-        for (int c : perSecond) total += c;
-        double avg = total / (double) perSecond.length;
-
-        // Long-term average should be near target (within generous range)
-        assertTrue(avg >= 8 && avg <= 32,
+        double avg = clicks / 5.0;
+        assertTrue(avg >= 12 && avg <= 28,
                 "Long-term average should be ~20, got " + avg);
     }
 
@@ -66,8 +51,8 @@ class HumanizedCpsLimiterTest {
         limiter.clearTimingState();
 
         int emitted = 0;
-        for (long t = 0; t < 2_000_000_000L; t += 1_000_000L) {
-            if (limiter.acquire(t, 20, true)) emitted++;
+        for (long t = 0; t < 2_000_000_000L; t += 50_000_000L) {
+            emitted += limiter.acquire(t, 20, true);
         }
         assertTrue(emitted > 0, "Should emit clicks after state clear");
     }
@@ -89,42 +74,30 @@ class HumanizedCpsLimiterTest {
 
     @Test
     void anyCpsWorks() {
-        // Just verify no crashes at various CPS values
         for (int cps : new int[]{1, 10, 20, 30, 40}) {
             HumanizedCpsLimiter limiter = new HumanizedCpsLimiter();
             int emitted = 0;
-            for (long t = 0; t < 1_000_000_000L; t += 1_000_000L) {
-                if (limiter.acquire(t, cps, true)) emitted++;
+            for (long t = 0; t < 1_000_000_000L; t += 50_000_000L) {
+                emitted += limiter.acquire(t, cps, true);
             }
-            assertTrue(emitted > 0, "Should emit at least some clicks at " + cps + " CPS");
+            assertTrue(emitted > 0, "Should emit at least some clicks at " + cps + " CPS, got " + emitted);
         }
     }
 
-    // --- helpers ---
-
     private static int[] countPerSecond(HumanizedCpsLimiter limiter, int cps, int seconds) {
         int[] result = new int[seconds];
-        int sec = 0;
-        int clicks = 0;
-        for (long t = 0; t < (long) seconds * 1_000_000_000L && sec < seconds; t += 1_000_000L) {
+        int sec = 0, clicks = 0;
+        for (long t = 0; t < (long) seconds * 1_000_000_000L && sec < seconds; t += 50_000_000L) {
             int currentSec = (int) (t / 1_000_000_000L);
-            if (currentSec != sec) {
-                result[sec] = clicks;
-                clicks = 0;
-                sec = currentSec;
-            }
-            if (limiter.acquire(t, cps, true)) clicks++;
+            if (currentSec != sec) { result[sec] = clicks; clicks = 0; sec = currentSec; }
+            clicks += limiter.acquire(t, cps, true);
         }
         return result;
     }
 
     private static int maxMinusMin(int[] values) {
-        int min = Integer.MAX_VALUE;
-        int max = Integer.MIN_VALUE;
-        for (int v : values) {
-            if (v < min) min = v;
-            if (v > max) max = v;
-        }
+        int min = Integer.MAX_VALUE, max = Integer.MIN_VALUE;
+        for (int v : values) { if (v < min) min = v; if (v > max) max = v; }
         return max - min;
     }
 }

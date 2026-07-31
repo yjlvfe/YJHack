@@ -175,7 +175,7 @@ public final class AutoRightClient implements ClientModInitializer {
         int pulses = placementPolicy.pulsesThisTick(cps,
                 enabled, activeGameplay, physicalDown, validCandidate);
         if (jitterEnabled && pulses > 0) {
-            pulses = clickLimiter.acquire(System.nanoTime(), cps, true) ? 1 : 0;
+            pulses = clickLimiter.acquire(System.nanoTime(), cps, true);
         }
         for (int i = 0; i < pulses; i++) {
             if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;
