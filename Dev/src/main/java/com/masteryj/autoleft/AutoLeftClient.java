@@ -61,6 +61,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             lastWorld = client == null ? null : client.world;
             requireRelease = physicalDown;
             physicalWasDown = physicalDown;
+            restoreVanillaAttack(client, physicalDown);
             limiter.reset();
             return;
         }
@@ -69,11 +70,13 @@ public final class AutoLeftClient implements ClientModInitializer {
         if (!enabled || !activeGameplay) {
             if (physicalDown) requireRelease = true;
             physicalWasDown = physicalDown;
+            restoreVanillaAttack(client, physicalDown);
             limiter.reset();
             return;
         }
 
         if (requireRelease) {
+            restoreVanillaAttack(client, physicalDown);
             limiter.reset();
             if (!physicalDown) {
                 requireRelease = false;
@@ -86,20 +89,32 @@ public final class AutoLeftClient implements ClientModInitializer {
 
         if (!physicalDown) {
             physicalWasDown = false;
+            restoreVanillaAttack(client, false);
             limiter.reset();
             return;
         }
 
         physicalWasDown = true;
+        boolean entityTargeted = client.crosshairTarget instanceof EntityHitResult;
+
         if (rising) {
-            // The real physical press is handled immediately by vanilla.
+            // Keep the first physical click fully vanilla, then arm the exact fixed-rate follow-up.
+            restoreVanillaAttack(client, true);
+            limiter.reset();
+            if (entityTargeted) limiter.acquire(System.nanoTime(), cps);
+            return;
+        }
+
+        if (!shouldRunDirectAttack(enabled, activeGameplay, physicalDown, entityTargeted)) {
+            // Ordinary block mining stays vanilla. No entity means no artificial miss traffic.
+            restoreVanillaAttack(client, true);
             limiter.reset();
             return;
         }
 
-        boolean entityTargeted = client.crosshairTarget instanceof EntityHitResult;
-        if (!shouldRunDirectAttack(enabled, activeGameplay, physicalDown, entityTargeted)) return;
-
+        // The physical state is still read from GLFW, but vanilla held-repeat is disabled here so
+        // the configured CPS is the only follow-up attack path and cannot be double-counted.
+        restoreVanillaAttack(client, false);
         if (limiter.acquire(System.nanoTime(), cps)) {
             ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
         }
@@ -110,6 +125,10 @@ public final class AutoLeftClient implements ClientModInitializer {
                                          boolean physicalDown,
                                          boolean entityTargeted) {
         return enabled && activeGameplay && physicalDown && entityTargeted;
+    }
+
+    private void restoreVanillaAttack(MinecraftClient client, boolean pressed) {
+        if (client != null && client.options != null) client.options.attackKey.setPressed(pressed);
     }
 
     private boolean isAttackDown(MinecraftClient client) {
@@ -139,7 +158,9 @@ public final class AutoLeftClient implements ClientModInitializer {
                 saveConfig(config);
             }
             if (!enabled) {
-                requireRelease = isAttackDown(client);
+                boolean physicalDown = isAttackDown(client);
+                requireRelease = physicalDown;
+                restoreVanillaAttack(client, physicalDown);
                 limiter.reset();
             }
             sendToggleMessage(client, enabled);
