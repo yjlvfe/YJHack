@@ -22,7 +22,7 @@ class ConfigDefaultsTest {
 
         AutoRightClient.Config right = RecommendedProfiles.autoRight();
         assertFalse(right.enabled);
-        assertEquals(10, right.cps);
+        assertEquals(20, right.cps);
 
         NinjaBridgeClient.Config bridge = RecommendedProfiles.ninjaBridge();
         assertFalse(bridge.enabled);
@@ -54,6 +54,12 @@ class ConfigDefaultsTest {
         assertNotSame(leftA, leftB);
         leftA.cps = 40;
         assertEquals(12, leftB.cps);
+
+        AutoRightClient.Config rightA = RecommendedProfiles.autoRight();
+        AutoRightClient.Config rightB = RecommendedProfiles.autoRight();
+        assertNotSame(rightA, rightB);
+        rightA.cps = 1;
+        assertEquals(20, rightB.cps);
 
         AimAssistClient.Config aimA = RecommendedProfiles.aimAssist();
         AimAssistClient.Config aimB = RecommendedProfiles.aimAssist();
