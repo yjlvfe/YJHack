@@ -19,11 +19,6 @@ public final class FixedCpsLimiter {
      */
     public boolean acquire(long nowNanos, int configuredCps) {
         int cps = clampCps(configuredCps);
-        if (cps <= 0) {
-            reset();
-            return false;
-        }
-
         long interval = Math.max(1L, SECOND_NANOS / cps);
         if (nextActionAtNanos == Long.MIN_VALUE) {
             nextActionAtNanos = nowNanos + interval;
@@ -36,7 +31,8 @@ public final class FixedCpsLimiter {
         return true;
     }
 
-    public void reset() {
+    /** Clears timing only; no action is emitted and no setting is changed. */
+    public void clearTimingState() {
         nextActionAtNanos = Long.MIN_VALUE;
     }
 

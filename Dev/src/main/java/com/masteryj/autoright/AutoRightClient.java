@@ -2,6 +2,7 @@ package com.masteryj.autoright;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.masteryj.config.RecommendedSettings;
 import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
 import com.masteryj.core.PhysicalKeyBinding;
@@ -9,13 +10,17 @@ import com.masteryj.mixin.MinecraftClientInvoker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
@@ -25,21 +30,24 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/** Fixed-rate direct right click for blocks; no shared budget, queue, random range, or catch-up. */
+/**
+ * One fixed physical-hold right-click path. Instant items use once per physical press, hold/charge
+ * items remain vanilla, and blocks use Minecraft's own doItemUse() through a no-backlog policy.
+ */
 public final class AutoRightClient implements ClientModInitializer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoRight");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoright.json");
-    private static final int CURRENT_CONFIG_VERSION = 7;
-    private static final int DEFAULT_CPS = 10;
+    private static final int CURRENT_CONFIG_VERSION = 8;
 
-    private final FixedCpsLimiter limiter = new FixedCpsLimiter();
+    private final LegacyMultiVersionPlacementPolicy placementPolicy =
+            new LegacyMultiVersionPlacementPolicy();
 
     public static Config config;
     public static boolean enabled;
     public static int toggleKeyCode = -1;
-    public static int cps = DEFAULT_CPS;
+    public static int cps = RecommendedSettings.AUTO_RIGHT_CPS;
 
     private World lastWorld;
     private boolean physicalWasDown;
@@ -68,7 +76,7 @@ public final class AutoRightClient implements ClientModInitializer {
             requireRelease = physicalDown;
             physicalWasDown = physicalDown;
             restoreVanillaUse(client, physicalDown);
-            resetSession();
+            clearRuntimeState();
             return;
         }
 
@@ -77,13 +85,13 @@ public final class AutoRightClient implements ClientModInitializer {
             if (physicalDown) requireRelease = true;
             physicalWasDown = physicalDown;
             restoreVanillaUse(client, physicalDown);
-            resetSession();
+            clearRuntimeState();
             return;
         }
 
         if (requireRelease) {
             restoreVanillaUse(client, physicalDown);
-            resetPress();
+            clearPressState();
             if (!physicalDown) {
                 requireRelease = false;
                 physicalWasDown = false;
@@ -96,24 +104,27 @@ public final class AutoRightClient implements ClientModInitializer {
         if (!physicalDown) {
             physicalWasDown = false;
             restoreVanillaUse(client, false);
-            resetPress();
+            clearPressState();
             return;
         }
 
         ItemStack held = client.player == null ? ItemStack.EMPTY : client.player.getMainHandStack();
         int currentSlot = client.player == null ? -1 : client.player.getInventory().getSelectedSlot();
         Item currentItem = held.isEmpty() ? null : held.getItem();
+        RightClickPolicy.Kind currentKind = RightClickPolicy.classify(held, client.player);
 
         if (rising) {
             pressedSlot = currentSlot;
             pressedItem = currentItem;
-            pressedKind = RightClickPolicy.classify(held, client.player);
+            pressedKind = currentKind;
             pressInvalidated = false;
             physicalWasDown = true;
             restoreVanillaUse(client, true);
-            limiter.reset();
-            if (pressedKind == RightClickPolicy.Kind.BLOCK) {
-                limiter.acquire(System.nanoTime(), cps);
+            placementPolicy.clearRuntimeState();
+            if (pressedKind == RightClickPolicy.Kind.BLOCK
+                    && isValidPlacementCandidate(client, held)) {
+                placementPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
+                        true, true, true, true);
             }
             // The first physical use remains fully vanilla.
             return;
@@ -121,37 +132,43 @@ public final class AutoRightClient implements ClientModInitializer {
 
         physicalWasDown = true;
         if (pressIdentityChanged(pressedSlot, pressedItem, currentSlot, currentItem)) {
-            pressInvalidated = true;
+            if (LegacyMultiVersionPlacementPolicy.canContinueAcrossSlotChange(pressedKind, currentKind)) {
+                // NinjaBridge may move from an empty block stack to another block stack while the
+                // physical hold remains down. Keep block context but drop old timing.
+                pressedSlot = currentSlot;
+                pressedItem = currentItem;
+                pressedKind = currentKind;
+                placementPolicy.clearRuntimeState();
+            } else {
+                pressInvalidated = true;
+            }
         }
 
         if (pressInvalidated) {
             restoreVanillaUse(client, false);
-            limiter.reset();
+            placementPolicy.clearRuntimeState();
             return;
         }
 
         if (pressedKind == RightClickPolicy.Kind.SINGLE_PRESS) {
             restoreVanillaUse(client, false);
-            limiter.reset();
+            placementPolicy.clearRuntimeState();
             return;
         }
 
         if (pressedKind != RightClickPolicy.Kind.BLOCK) {
             // Food, bows, shields and charge/hold items remain completely vanilla.
             restoreVanillaUse(client, true);
-            limiter.reset();
+            placementPolicy.clearRuntimeState();
             return;
         }
 
-        // Stop vanilla's held-repeat after its first physical use. The direct limiter below is now
-        // the sole follow-up path, so configured CPS cannot be inflated by a second hidden source.
+        // Stop vanilla's held repeat after the first physical use. The policy is the sole follow-up
+        // owner and always calls vanilla doItemUse(), preserving sequence ids and prediction rules.
         restoreVanillaUse(client, false);
-        if (!(client.crosshairTarget instanceof BlockHitResult)) {
-            limiter.reset();
-            return;
-        }
-
-        if (limiter.acquire(System.nanoTime(), cps)) {
+        boolean validCandidate = isValidPlacementCandidate(client, held);
+        if (placementPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
+                enabled, activeGameplay, physicalDown, validCandidate)) {
             ((MinecraftClientInvoker) client).yjhack$invokeDoItemUse();
         }
     }
@@ -171,20 +188,38 @@ public final class AutoRightClient implements ClientModInitializer {
         return initialSlot != currentSlot || initialItem != currentItem;
     }
 
+    private boolean isValidPlacementCandidate(MinecraftClient client, ItemStack held) {
+        if (client == null || client.player == null || client.world == null
+                || held == null || held.isEmpty() || !(held.getItem() instanceof BlockItem)
+                || !(client.crosshairTarget instanceof BlockHitResult hit)
+                || hit.getType() != HitResult.Type.BLOCK) {
+            return false;
+        }
+
+        BlockPos clickedPos = hit.getBlockPos();
+        BlockState clickedState = client.world.getBlockState(clickedPos);
+        BlockPos placementPos = clickedState.isReplaceable()
+                ? clickedPos
+                : clickedPos.offset(hit.getSide());
+
+        if (!client.world.getWorldBorder().contains(placementPos)) return false;
+        return client.world.getBlockState(placementPos).isReplaceable();
+    }
+
     private void restoreVanillaUse(MinecraftClient client, boolean pressed) {
         if (client != null && client.options != null) client.options.useKey.setPressed(pressed);
     }
 
-    private void resetPress() {
-        limiter.reset();
+    private void clearPressState() {
+        placementPolicy.clearRuntimeState();
         pressedSlot = -1;
         pressedItem = null;
         pressedKind = RightClickPolicy.Kind.PASS_THROUGH;
         pressInvalidated = false;
     }
 
-    private void resetSession() {
-        resetPress();
+    private void clearRuntimeState() {
+        clearPressState();
     }
 
     private boolean isUseDown(MinecraftClient client) {
@@ -217,7 +252,7 @@ public final class AutoRightClient implements ClientModInitializer {
                 boolean physicalDown = isUseDown(client);
                 requireRelease = physicalDown;
                 restoreVanillaUse(client, physicalDown);
-                resetSession();
+                clearRuntimeState();
             }
             sendToggleMessage(client, enabled);
         }
@@ -231,15 +266,43 @@ public final class AutoRightClient implements ClientModInitializer {
         client.player.sendMessage(message, true);
     }
 
+    public static Config recommendedDefaults() {
+        return Config.recommendedDefaults();
+    }
+
     public static final class Config {
         public int configVersion = CURRENT_CONFIG_VERSION;
         public boolean enabled = false;
         public int toggleKeyCode = -1;
-        public int cps = DEFAULT_CPS;
+        public int cps = RecommendedSettings.AUTO_RIGHT_CPS;
 
-        // Read-only migration fields for v6 and older files; normalized back to null.
+        // Read-only migration fields for v7 and older files; normalized back to null.
         public Integer minCps;
         public Integer maxCps;
+
+        public static Config recommendedDefaults() {
+            Config cfg = new Config();
+            cfg.configVersion = CURRENT_CONFIG_VERSION;
+            cfg.enabled = false;
+            cfg.toggleKeyCode = -1;
+            cfg.cps = RecommendedSettings.AUTO_RIGHT_CPS;
+            cfg.minCps = null;
+            cfg.maxCps = null;
+            cfg.normalize();
+            return cfg;
+        }
+
+        public Config copy() {
+            Config result = new Config();
+            result.configVersion = configVersion;
+            result.enabled = enabled;
+            result.toggleKeyCode = toggleKeyCode;
+            result.cps = cps;
+            result.minCps = minCps;
+            result.maxCps = maxCps;
+            result.normalize();
+            return result;
+        }
 
         public void normalize() {
             if (configVersion < CURRENT_CONFIG_VERSION) {
@@ -267,8 +330,7 @@ public final class AutoRightClient implements ClientModInitializer {
         } catch (Exception e) {
             LOGGER.error("Failed to load AutoRight config", e);
         }
-        Config fresh = new Config();
-        fresh.normalize();
+        Config fresh = recommendedDefaults();
         saveConfig(fresh);
         return fresh;
     }

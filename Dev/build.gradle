@@ -47,9 +47,8 @@ tasks.withType(JavaCompile).configureEach {
     it.options.encoding = 'UTF-8'
 }
 
-// Use a regular task with an exact output file. A Copy task pointed at the repository root makes
-// Gradle treat the whole checkout as its output directory, which conflicts with sourcesJar.
-def rootConvenienceJar = file('../YJHack-1.21.5.jar')
+// Exact release-friendly output. This task copies only the remapped production jar.
+def rootConvenienceJar = file("../YJHack-${project.version}-mc1.21.5.jar")
 tasks.register('copyJar') {
     dependsOn check, remapJar
     inputs.file(remapJar.archiveFile)

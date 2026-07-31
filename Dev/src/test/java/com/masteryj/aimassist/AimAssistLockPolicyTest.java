@@ -1,5 +1,6 @@
 package com.masteryj.aimassist;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,12 +9,20 @@ import org.junit.jupiter.api.Test;
 class AimAssistLockPolicyTest {
 
     @Test
-    void lockDistanceEndsImmediatelyAfterFivePointFiveBlocks() {
-        assertTrue(AimAssistRangePolicy.isWithinDistance(0.0D));
-        assertTrue(AimAssistRangePolicy.isWithinDistance(30.25D));
-        assertFalse(AimAssistRangePolicy.isWithinDistance(30.250_001D));
-        assertFalse(AimAssistRangePolicy.isWithinDistance(Double.NaN));
-        assertFalse(AimAssistRangePolicy.isWithinDistance(Double.POSITIVE_INFINITY));
+    void absoluteRangeEndsImmediatelyAfterThreePointFiveBlocks() {
+        assertTrue(AimAssistRangePolicy.isWithinAbsoluteDistance(0.0D));
+        assertTrue(AimAssistRangePolicy.isWithinAbsoluteDistance(12.25D));
+        assertFalse(AimAssistRangePolicy.isWithinAbsoluteDistance(12.250_001D));
+        assertFalse(AimAssistRangePolicy.isWithinAbsoluteDistance(Double.NaN));
+        assertFalse(AimAssistRangePolicy.isWithinAbsoluteDistance(Double.POSITIVE_INFINITY));
+    }
+
+    @Test
+    void configuredRangeCanNeverExceedThreePointFive() {
+        assertEquals(3.5D, AimAssistRangePolicy.clampConfiguredDistance(999.0D), 0.0D);
+        assertEquals(3.5D, AimAssistRangePolicy.clampConfiguredDistance(Double.NaN), 0.0D);
+        assertTrue(AimAssistClient.isWithinLockDistance(12.25D, 999.0D));
+        assertFalse(AimAssistClient.isWithinLockDistance(12.250_001D, 999.0D));
     }
 
     @Test
@@ -24,22 +33,22 @@ class AimAssistLockPolicyTest {
     }
 
     @Test
-    void bedLockPersistsOnlyWhileTheSameBreakIsActive() {
+    void bedLockPersistsOnlyWhileTheSameBedBreakIsActive() {
         assertTrue(AimAssistClient.shouldHoldBedAimLock(
-                true, true, true, true, false));
+                true, true, true, true, true));
         assertFalse(AimAssistClient.shouldHoldBedAimLock(
-                true, false, true, true, false), "releasing attack unlocks aim");
+                true, false, true, true, true), "releasing attack unlocks aim");
         assertFalse(AimAssistClient.shouldHoldBedAimLock(
-                true, true, false, true, false), "ending block breaking unlocks aim");
+                true, true, false, true, true), "ending block breaking unlocks aim");
         assertFalse(AimAssistClient.shouldHoldBedAimLock(
-                true, true, true, false, false), "a destroyed bed unlocks aim");
+                true, true, true, false, true), "a destroyed bed unlocks aim");
         assertFalse(AimAssistClient.shouldHoldBedAimLock(
-                true, true, true, true, true), "an accepted player hit overrides the bed lock");
+                true, true, true, true, false), "changing away from the bed unlocks aim");
     }
 
     @Test
     void ordinaryBlocksNeverCreateTheSpecialLock() {
         assertFalse(AimAssistClient.shouldHoldBedAimLock(
-                false, true, true, true, false));
+                false, true, true, true, true));
     }
 }
