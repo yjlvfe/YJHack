@@ -1,5 +1,6 @@
 package com.masteryj.ninjabridge;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,5 +34,12 @@ class NinjaBridgeGuardsTest {
     void slotIsChangedOnlyWhenDifferent() {
         assertFalse(NinjaBridgeClient.needsSlotSwitch(3, 3));
         assertTrue(NinjaBridgeClient.needsSlotSwitch(4, 3));
+    }
+
+    @Test
+    void slotDelayIsConservativelyClamped() {
+        assertEquals(50_000_000L, NinjaBridgeClient.switchDelayNanos(-1));
+        assertEquals(120_000_000L, NinjaBridgeClient.switchDelayNanos(120));
+        assertEquals(500_000_000L, NinjaBridgeClient.switchDelayNanos(999));
     }
 }
