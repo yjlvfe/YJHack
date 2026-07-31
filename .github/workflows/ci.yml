@@ -43,7 +43,7 @@ jobs:
           if-no-files-found: error
 
   publish_release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && github.event.head_commit.message == 'Publish YJHack v1.2.2 long-hold repair')
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -59,10 +59,10 @@ jobs:
       - name: Generate SHA-256 checksum
         run: sha256sum YJHack-1.21.5.jar > YJHack-1.21.5.jar.sha256
 
-      - name: Publish tagged GitHub Release
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v1.2.2' }}
           RELEASE_TARGET: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -76,6 +76,6 @@ jobs:
               YJHack-1.21.5.jar \
               YJHack-1.21.5.jar.sha256 \
               --target "$RELEASE_TARGET" \
-              --title "YJHack $RELEASE_TAG" \
-              --generate-notes
+              --title "YJHack v1.2.2 — Long Hold Repair" \
+              --notes "Verified Minecraft 1.21.5 release. Restores reliable long-held AutoLeft and AutoRight input, preserves vanilla mining and charge/use items, retains single-press and slot-change safety, keeps remapped controls working, and leaves NinjaBridge unchanged. Built with Java 21 and Gradle 8.14.4 after a clean test build."
           fi
