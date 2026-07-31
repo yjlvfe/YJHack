@@ -67,6 +67,7 @@ public final class AutoRightClient implements ClientModInitializer {
             lastWorld = client == null ? null : client.world;
             requireRelease = physicalDown;
             physicalWasDown = physicalDown;
+            restoreVanillaUse(client, physicalDown);
             resetSession();
             return;
         }
@@ -75,11 +76,13 @@ public final class AutoRightClient implements ClientModInitializer {
         if (!enabled || !activeGameplay) {
             if (physicalDown) requireRelease = true;
             physicalWasDown = physicalDown;
+            restoreVanillaUse(client, physicalDown);
             resetSession();
             return;
         }
 
         if (requireRelease) {
+            restoreVanillaUse(client, physicalDown);
             resetPress();
             if (!physicalDown) {
                 requireRelease = false;
@@ -92,6 +95,7 @@ public final class AutoRightClient implements ClientModInitializer {
 
         if (!physicalDown) {
             physicalWasDown = false;
+            restoreVanillaUse(client, false);
             resetPress();
             return;
         }
@@ -106,8 +110,12 @@ public final class AutoRightClient implements ClientModInitializer {
             pressedKind = RightClickPolicy.classify(held, client.player);
             pressInvalidated = false;
             physicalWasDown = true;
+            restoreVanillaUse(client, true);
             limiter.reset();
-            // Vanilla handles the first real physical use immediately.
+            if (pressedKind == RightClickPolicy.Kind.BLOCK) {
+                limiter.acquire(System.nanoTime(), cps);
+            }
+            // The first physical use remains fully vanilla.
             return;
         }
 
@@ -117,28 +125,31 @@ public final class AutoRightClient implements ClientModInitializer {
         }
 
         if (pressInvalidated) {
-            if (shouldSuppressVanillaHold(enabled, activeGameplay, requireRelease, true, pressedKind)) {
-                suppressUseKey(client);
-            }
+            restoreVanillaUse(client, false);
             limiter.reset();
             return;
         }
 
         if (pressedKind == RightClickPolicy.Kind.SINGLE_PRESS) {
-            if (shouldSuppressVanillaHold(enabled, activeGameplay, requireRelease, false, pressedKind)) {
-                suppressUseKey(client);
-            }
+            restoreVanillaUse(client, false);
             limiter.reset();
             return;
         }
 
         if (pressedKind != RightClickPolicy.Kind.BLOCK) {
             // Food, bows, shields and charge/hold items remain completely vanilla.
+            restoreVanillaUse(client, true);
             limiter.reset();
             return;
         }
 
-        if (!(client.crosshairTarget instanceof BlockHitResult)) return;
+        // Stop vanilla's held-repeat after its first physical use. The direct limiter below is now
+        // the sole follow-up path, so configured CPS cannot be inflated by a second hidden source.
+        restoreVanillaUse(client, false);
+        if (!(client.crosshairTarget instanceof BlockHitResult)) {
+            limiter.reset();
+            return;
+        }
 
         if (limiter.acquire(System.nanoTime(), cps)) {
             ((MinecraftClientInvoker) client).yjhack$invokeDoItemUse();
@@ -151,7 +162,8 @@ public final class AutoRightClient implements ClientModInitializer {
                                              boolean pressInvalidated,
                                              RightClickPolicy.Kind kind) {
         if (!enabled || !activeGameplay || waitingForRelease) return false;
-        return pressInvalidated || kind == RightClickPolicy.Kind.SINGLE_PRESS;
+        return pressInvalidated || kind == RightClickPolicy.Kind.SINGLE_PRESS
+                || kind == RightClickPolicy.Kind.BLOCK;
     }
 
     static boolean pressIdentityChanged(int initialSlot, Object initialItem,
@@ -159,8 +171,8 @@ public final class AutoRightClient implements ClientModInitializer {
         return initialSlot != currentSlot || initialItem != currentItem;
     }
 
-    private void suppressUseKey(MinecraftClient client) {
-        if (client != null && client.options != null) client.options.useKey.setPressed(false);
+    private void restoreVanillaUse(MinecraftClient client, boolean pressed) {
+        if (client != null && client.options != null) client.options.useKey.setPressed(pressed);
     }
 
     private void resetPress() {
@@ -202,7 +214,9 @@ public final class AutoRightClient implements ClientModInitializer {
                 saveConfig(config);
             }
             if (!enabled) {
-                requireRelease = isUseDown(client);
+                boolean physicalDown = isUseDown(client);
+                requireRelease = physicalDown;
+                restoreVanillaUse(client, physicalDown);
                 resetSession();
             }
             sendToggleMessage(client, enabled);
