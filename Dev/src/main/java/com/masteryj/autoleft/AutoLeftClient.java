@@ -2,6 +2,7 @@ package com.masteryj.autoleft;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.masteryj.config.RecommendedSettings;
 import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
 import com.masteryj.core.PhysicalKeyBinding;
@@ -10,10 +11,10 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.Formatting;
-import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
+import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.world.World;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
@@ -23,21 +24,23 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/** Fixed-rate direct left click: no shared budget, queue, random range, or catch-up. */
+/**
+ * One fixed physical-hold attack path. The first click remains vanilla; follow-up attempts use
+ * Minecraft's own doAttack() through a monotonic, no-backlog multi-version policy.
+ */
 public final class AutoLeftClient implements ClientModInitializer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoLeft");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
-    private static final int CURRENT_CONFIG_VERSION = 7;
-    private static final int DEFAULT_CPS = 10;
+    private static final int CURRENT_CONFIG_VERSION = 8;
 
-    private final FixedCpsLimiter limiter = new FixedCpsLimiter();
+    private final LegacyMultiVersionCombatPolicy combatPolicy = new LegacyMultiVersionCombatPolicy();
 
     public static Config config;
     public static boolean enabled;
     public static int toggleKeyCode = -1;
-    public static int cps = DEFAULT_CPS;
+    public static int cps = RecommendedSettings.AUTO_LEFT_CPS;
 
     private World lastWorld;
     private boolean physicalWasDown;
@@ -62,7 +65,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             requireRelease = physicalDown;
             physicalWasDown = physicalDown;
             restoreVanillaAttack(client, physicalDown);
-            limiter.reset();
+            clearRuntimeState();
             return;
         }
 
@@ -71,13 +74,13 @@ public final class AutoLeftClient implements ClientModInitializer {
             if (physicalDown) requireRelease = true;
             physicalWasDown = physicalDown;
             restoreVanillaAttack(client, physicalDown);
-            limiter.reset();
+            clearRuntimeState();
             return;
         }
 
         if (requireRelease) {
             restoreVanillaAttack(client, physicalDown);
-            limiter.reset();
+            clearRuntimeState();
             if (!physicalDown) {
                 requireRelease = false;
                 physicalWasDown = false;
@@ -90,7 +93,7 @@ public final class AutoLeftClient implements ClientModInitializer {
         if (!physicalDown) {
             physicalWasDown = false;
             restoreVanillaAttack(client, false);
-            limiter.reset();
+            clearRuntimeState();
             return;
         }
 
@@ -98,24 +101,28 @@ public final class AutoLeftClient implements ClientModInitializer {
         boolean entityTargeted = client.crosshairTarget instanceof EntityHitResult;
 
         if (rising) {
-            // Keep the first physical click fully vanilla, then arm the exact fixed-rate follow-up.
+            // The real press is not synthesized or duplicated. It follows the normal client path.
             restoreVanillaAttack(client, true);
-            limiter.reset();
-            if (entityTargeted) limiter.acquire(System.nanoTime(), cps);
+            clearRuntimeState();
+            if (entityTargeted) {
+                combatPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
+                        true, true, true, true);
+            }
             return;
         }
 
         if (!shouldRunDirectAttack(enabled, activeGameplay, physicalDown, entityTargeted)) {
-            // Ordinary block mining stays vanilla. No entity means no artificial miss traffic.
+            // Mining and empty-space holds remain vanilla. No artificial miss packets are created.
             restoreVanillaAttack(client, true);
-            limiter.reset();
+            clearRuntimeState();
             return;
         }
 
-        // The physical state is still read from GLFW, but vanilla held-repeat is disabled here so
-        // the configured CPS is the only follow-up attack path and cannot be double-counted.
+        // There is one follow-up owner only: vanilla held-repeat is suppressed while the policy
+        // invokes Minecraft's own doAttack(). The physical state is read separately from GLFW.
         restoreVanillaAttack(client, false);
-        if (limiter.acquire(System.nanoTime(), cps)) {
+        if (combatPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
+                enabled, activeGameplay, physicalDown, entityTargeted)) {
             ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
         }
     }
@@ -125,6 +132,10 @@ public final class AutoLeftClient implements ClientModInitializer {
                                          boolean physicalDown,
                                          boolean entityTargeted) {
         return enabled && activeGameplay && physicalDown && entityTargeted;
+    }
+
+    private void clearRuntimeState() {
+        combatPolicy.clearRuntimeState();
     }
 
     private void restoreVanillaAttack(MinecraftClient client, boolean pressed) {
@@ -161,7 +172,7 @@ public final class AutoLeftClient implements ClientModInitializer {
                 boolean physicalDown = isAttackDown(client);
                 requireRelease = physicalDown;
                 restoreVanillaAttack(client, physicalDown);
-                limiter.reset();
+                clearRuntimeState();
             }
             sendToggleMessage(client, enabled);
         }
@@ -175,15 +186,43 @@ public final class AutoLeftClient implements ClientModInitializer {
         client.player.sendMessage(message, true);
     }
 
+    public static Config recommendedDefaults() {
+        return Config.recommendedDefaults();
+    }
+
     public static final class Config {
         public int configVersion = CURRENT_CONFIG_VERSION;
         public boolean enabled = false;
         public int toggleKeyCode = -1;
-        public int cps = DEFAULT_CPS;
+        public int cps = RecommendedSettings.AUTO_LEFT_CPS;
 
-        // Read-only migration fields for v6 and older files; normalized back to null.
+        // Read-only migration fields for v7 and older files; normalized back to null.
         public Integer minCps;
         public Integer maxCps;
+
+        public static Config recommendedDefaults() {
+            Config cfg = new Config();
+            cfg.configVersion = CURRENT_CONFIG_VERSION;
+            cfg.enabled = false;
+            cfg.toggleKeyCode = -1;
+            cfg.cps = RecommendedSettings.AUTO_LEFT_CPS;
+            cfg.minCps = null;
+            cfg.maxCps = null;
+            cfg.normalize();
+            return cfg;
+        }
+
+        public Config copy() {
+            Config result = new Config();
+            result.configVersion = configVersion;
+            result.enabled = enabled;
+            result.toggleKeyCode = toggleKeyCode;
+            result.cps = cps;
+            result.minCps = minCps;
+            result.maxCps = maxCps;
+            result.normalize();
+            return result;
+        }
 
         public void normalize() {
             if (configVersion < CURRENT_CONFIG_VERSION) {
@@ -211,8 +250,7 @@ public final class AutoLeftClient implements ClientModInitializer {
         } catch (Exception e) {
             LOGGER.error("Failed to load AutoLeft config", e);
         }
-        Config fresh = new Config();
-        fresh.normalize();
+        Config fresh = recommendedDefaults();
         saveConfig(fresh);
         return fresh;
     }
