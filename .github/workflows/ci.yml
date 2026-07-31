@@ -51,12 +51,54 @@ jobs:
         working-directory: Dev
         run: gradle --no-daemon clean test build --warning-mode all
 
-      - name: Verify final jar exists
+      - name: Verify and summarize tests and jar
+        env:
+          JAR_NAME: ${{ steps.meta.outputs.jar_name }}
         shell: bash
         run: |
           set -euo pipefail
-          test -f "${{ steps.meta.outputs.jar_name }}"
-          test -s "${{ steps.meta.outputs.jar_name }}"
+          test -f "$JAR_NAME"
+          test -s "$JAR_NAME"
+          python3 - <<'PY'
+          import glob
+          import hashlib
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+          files = glob.glob("Dev/build/test-results/test/TEST-*.xml")
+          if not files:
+              raise SystemExit("No JUnit XML results found")
+          for filename in files:
+              root = ET.parse(filename).getroot()
+              for key in totals:
+                  totals[key] += int(root.attrib.get(key, "0"))
+
+          jar = pathlib.Path(os.environ["JAR_NAME"])
+          digest = hashlib.sha256(jar.read_bytes()).hexdigest()
+          size = jar.stat().st_size
+          summary = (
+              f"TEST SUMMARY: tests={totals['tests']} failures={totals['failures']} "
+              f"errors={totals['errors']} skipped={totals['skipped']}\n"
+              f"JAR: {jar.name}\nJAR SIZE: {size} bytes\nJAR SHA-256: {digest}\n"
+          )
+          print(summary, end="")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+              output.write("## Verified build\n\n```text\n" + summary + "```\n")
+          if totals["failures"] or totals["errors"]:
+              raise SystemExit("JUnit results contain failures or errors")
+          PY
+
+      - name: Verify clean Git worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(git status --porcelain --untracked-files=all)"
+          if [[ -n "$status" ]]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi
 
       - name: Upload verified jar
         uses: actions/upload-artifact@v7
