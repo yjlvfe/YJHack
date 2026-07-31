@@ -24,14 +24,22 @@ class AimAssistLockPolicyTest {
     }
 
     @Test
-    void blockActionsCancelAnExistingLock() {
-        assertTrue(AimAssistClient.shouldCancelForBlockAction(true, false, false),
-                "active block breaking cancels the lock");
-        assertTrue(AimAssistClient.shouldCancelForBlockAction(false, true, false),
-                "starting a block attack cancels the lock");
-        assertTrue(AimAssistClient.shouldCancelForBlockAction(false, false, true),
-                "placing a block cancels the lock");
-        assertFalse(AimAssistClient.shouldCancelForBlockAction(false, false, false),
-                "ordinary combat movement keeps the same visible target latched");
+    void bedLockPersistsOnlyWhileTheSameBreakIsActive() {
+        assertTrue(AimAssistClient.shouldHoldBedAimLock(
+                true, true, true, true, false));
+        assertFalse(AimAssistClient.shouldHoldBedAimLock(
+                true, false, true, true, false), "releasing attack unlocks aim");
+        assertFalse(AimAssistClient.shouldHoldBedAimLock(
+                true, true, false, true, false), "ending block breaking unlocks aim");
+        assertFalse(AimAssistClient.shouldHoldBedAimLock(
+                true, true, true, false, false), "a destroyed bed unlocks aim");
+        assertFalse(AimAssistClient.shouldHoldBedAimLock(
+                true, true, true, true, true), "an accepted player hit overrides the bed lock");
+    }
+
+    @Test
+    void ordinaryBlocksNeverCreateTheSpecialLock() {
+        assertFalse(AimAssistClient.shouldHoldBedAimLock(
+                false, true, true, true, false));
     }
 }

@@ -8,10 +8,16 @@ import org.junit.jupiter.api.Test;
 class AutoRightLongHoldPolicyTest {
 
     @Test
-    void blocksAndChargeItemsKeepTheirVanillaHold() {
-        assertFalse(AutoRightClient.shouldSuppressVanillaHold(
+    void blockAndDiscreteHoldsAreSuppressedAfterTheFirstVanillaUse() {
+        assertTrue(AutoRightClient.shouldSuppressVanillaHold(
                 true, true, false, false, RightClickPolicy.Kind.BLOCK),
-                "block placement must keep the real use key pressed");
+                "fixed direct CPS must be the only repeated block-use path");
+        assertTrue(AutoRightClient.shouldSuppressVanillaHold(
+                true, true, false, false, RightClickPolicy.Kind.SINGLE_PRESS));
+    }
+
+    @Test
+    void chargeAndConsumableItemsRemainVanilla() {
         assertFalse(AutoRightClient.shouldSuppressVanillaHold(
                 true, true, false, false, RightClickPolicy.Kind.PASS_THROUGH),
                 "bows, food, shields and other hold items must remain vanilla");
@@ -20,19 +26,16 @@ class AutoRightLongHoldPolicyTest {
     @Test
     void disabledOrGatedAutomationNeverReleasesTheRealKey() {
         assertFalse(AutoRightClient.shouldSuppressVanillaHold(
-                false, true, false, false, RightClickPolicy.Kind.SINGLE_PRESS));
+                false, true, false, false, RightClickPolicy.Kind.BLOCK));
         assertFalse(AutoRightClient.shouldSuppressVanillaHold(
-                true, false, false, false, RightClickPolicy.Kind.SINGLE_PRESS));
+                true, false, false, false, RightClickPolicy.Kind.BLOCK));
         assertFalse(AutoRightClient.shouldSuppressVanillaHold(
-                true, true, true, false, RightClickPolicy.Kind.SINGLE_PRESS));
+                true, true, true, false, RightClickPolicy.Kind.BLOCK));
     }
 
     @Test
-    void OnlyDiscreteOrInvalidatedPressesAreSuppressed() {
+    void changingSlotDuringAHoldIsAlwaysSuppressed() {
         assertTrue(AutoRightClient.shouldSuppressVanillaHold(
-                true, true, false, false, RightClickPolicy.Kind.SINGLE_PRESS));
-        assertTrue(AutoRightClient.shouldSuppressVanillaHold(
-                true, true, false, true, RightClickPolicy.Kind.BLOCK),
-                "changing slot during a hold must not activate the replacement item");
+                true, true, false, true, RightClickPolicy.Kind.PASS_THROUGH));
     }
 }
