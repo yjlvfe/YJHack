@@ -8,76 +8,97 @@ import java.util.random.RandomGeneratorFactory;
  *
  * <p>Four independent dimensions of humanization:
  * <ol>
- *   <li>Micro-wobble: tiny random offset every tick (±0.15°–0.5°)</li>
- *   <li>Inconsistent speed: lerp varies ±15% per tick</li>
+ *   <li>Micro-wobble: tiny random offset every tick</li>
+ *   <li>Inconsistent speed: lerp varies per tick, scaled by CPS</li>
  *   <li>Organic path: gentle sine-wave deviation while tracking</li>
- *   <li>Body variation: aim point drifts across the target's hitbox</li>
+ *   <li>Body variation: per-target aim point drift (stable per entity)</li>
  * </ol>
  *
- * <p>All effects are subtle — a spectator won't see them, but pattern-based
- * anti-cheat cannot match the movement to any known automation signature.
+ * <p>Uses targetId to seed per-target offsets so the same target always gets
+ * the same body drift — looks like a human aiming at a specific body part.
  */
 public final class HumanizedAimAssist {
 
     private static final RandomGenerator RNG =
             RandomGeneratorFactory.getDefault().create();
 
-    // Per-instance state for organic continuity
     private double phase;
     private long lastBodySwitchNanos;
+    private int lastTargetId = -1;
     private double bodyYawOffset;
     private double bodyPitchOffset;
 
     /**
-     * Apply humanized corrections to raw aim angles.
+     * Apply humanized corrections to aim movement.
      *
-     * @param rawYawDelta   yaw delta from raw aim calculation
-     * @param rawPitchDelta pitch delta from raw aim calculation
-     * @param baseLerp      the base interpolation factor (speed × curve)
-     * @param targetId      entity ID for per-target body variation stability
-     * @return corrected lerp factor (already includes wobble + speed variance)
+     * @param yawDelta      raw yaw delta from aim calculation
+     * @param pitchDelta    raw pitch delta from aim calculation
+     * @param baseSpeed     raw speed factor (0.005–1.0)
+     * @param targetId      entity ID for per-target body variation
+     * @return corrected deltas and lerp
      */
     public HumanizedAimResult apply(
-            float rawYawDelta, float rawPitchDelta,
-            float baseLerp, int targetId) {
+            float yawDelta, float pitchDelta,
+            float baseSpeed, int targetId) {
 
-        // 1. Inconsistent speed: vary lerp ±15%
-        float speedVariance = 0.85F + RNG.nextFloat() * 0.30F;
-        float lerp = baseLerp * speedVariance;
+        // 1. Inconsistent speed: vary ±15% per tick (scaled by baseSpeed)
+        float speedVar = 0.85F + RNG.nextFloat() * 0.30F;
+        float lerp = Math.min(1.0F, baseSpeed * speedVar);
 
-        // 2. Micro-wobble: tiny jitter added every tick
+        // 2. Micro-wobble
         float wobbleYaw = (RNG.nextFloat() - 0.5F) * 0.6F;   // ±0.3°
         float wobblePitch = (RNG.nextFloat() - 0.5F) * 0.4F; // ±0.2°
 
-        // 3. Organic path: gentle sine drift over time
+        // 3. Organic path: gentle sine drift
         phase += 0.15 + RNG.nextDouble() * 0.05;
         double organicDrift = Math.sin(phase) * 0.4;
 
-        // 4. Body variation: switch aim point every 200-400ms
-        long now = System.nanoTime();
-        if (lastBodySwitchNanos == 0 || now - lastBodySwitchNanos > bodySwitchInterval()) {
-            lastBodySwitchNanos = now;
-            bodyYawOffset = (RNG.nextDouble() - 0.5) * 0.6;   // ±0.3°
-            bodyPitchOffset = (RNG.nextDouble() - 0.5) * 0.5; // ±0.25°
-        }
+        // 4. Body variation — tied to targetId so it's stable per target
+        updateBodyOffsets(targetId);
 
         // Compose final deltas
-        float finalYawDelta = rawYawDelta + wobbleYaw + (float) organicDrift
-                + (float) bodyYawOffset * 0.3F;
-        float finalPitchDelta = rawPitchDelta + wobblePitch + (float) bodyPitchOffset * 0.3F;
+        // Use speed (not lerp) as the movement multiplier; humanizer adds wobble on top
+        float finalYawDelta = yawDelta + wobbleYaw + (float) organicDrift
+                + (float) bodyYawOffset;
+        float finalPitchDelta = pitchDelta + wobblePitch + (float) bodyPitchOffset;
 
         return new HumanizedAimResult(finalYawDelta, finalPitchDelta, lerp);
+    }
+
+    private void updateBodyOffsets(int targetId) {
+        if (targetId != lastTargetId) {
+            // New target — generate fresh body aim point
+            lastTargetId = targetId;
+            bodyYawOffset = (RNG.nextDouble() - 0.5) * 0.5;   // ±0.25°
+            bodyPitchOffset = (RNG.nextDouble() - 0.5) * 0.4; // ±0.20°
+            lastBodySwitchNanos = System.nanoTime();
+        }
+
+        // Periodic drift within the same target (200-400ms)
+        long now = System.nanoTime();
+        if (now - lastBodySwitchNanos > bodySwitchInterval()) {
+            lastBodySwitchNanos = now;
+            // Small drift, not full reset — same body part, slight wander
+            bodyYawOffset += (RNG.nextDouble() - 0.5) * 0.2;
+            bodyPitchOffset += (RNG.nextDouble() - 0.5) * 0.15;
+            // Clamp to reasonable limits
+            bodyYawOffset = Math.max(-0.5, Math.min(0.5, bodyYawOffset));
+            bodyPitchOffset = Math.max(-0.4, Math.min(0.4, bodyPitchOffset));
+        }
     }
 
     private long bodySwitchInterval() {
         return 200_000_000L + RNG.nextLong(200_000_001L); // 200–400ms
     }
 
+    /** Reset all state — call on world change, disable, or death. */
     public void reset() {
         phase = 0;
         lastBodySwitchNanos = 0;
+        lastTargetId = -1;
+        bodyYawOffset = 0;
+        bodyPitchOffset = 0;
     }
 
-    /** Result of humanized aim calculation. */
     public record HumanizedAimResult(float yawDelta, float pitchDelta, float lerp) {}
 }

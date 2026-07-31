@@ -297,27 +297,37 @@ public final class AimAssistClient implements ClientModInitializer {
         float currentPitch = client.player.getPitch();
         float yawDelta = MathHelper.wrapDegrees(sample.angles().yaw() - currentYaw);
         float pitchDelta = sample.angles().pitch() - currentPitch;
-        float baseLerp = MathHelper.clamp(speed * (1.25F - smoothness), 0.005F, 1.0F);
-        float progress = MathHelper.clamp(1.0F - Math.abs(yawDelta) / Math.max(1.0F, fov), 0.0F, 1.0F);
-        float sCurve = progress * progress * (3.0F - 2.0F * progress);
-        float lerp = MathHelper.clamp(baseLerp * (0.6F + sCurve * 0.9F), 0.001F, 1.0F);
+        float baseSpeed = MathHelper.clamp(speed * (1.25F - smoothness), 0.005F, 1.0F);
 
         if (humanizedAim) {
+            // Fully humanized path — replaces S-curve entirely
             int targetId = target != null ? target.getId() : 0;
             HumanizedAimAssist.HumanizedAimResult result =
-                    humanizer.apply(yawDelta, pitchDelta, lerp, targetId);
+                    humanizer.apply(yawDelta, pitchDelta, baseSpeed, targetId);
             yawDelta = result.yawDelta();
             pitchDelta = result.pitchDelta();
-            lerp = result.lerp();
-        }
+            float lerp = MathHelper.clamp(result.lerp(), 0.001F, 1.0F);
 
-        float newYaw = currentYaw + yawDelta * lerp;
-        float newPitch = currentPitch
-                + pitchDelta * MathHelper.clamp(lerp * 0.82F, 0.001F, 1.0F);
-        client.player.setYaw(newYaw);
-        client.player.setPitch(MathHelper.clamp(newPitch, -90.0F, 90.0F));
-        client.player.setHeadYaw(newYaw);
-        client.player.setBodyYaw(newYaw);
+            float newYaw = currentYaw + yawDelta * lerp;
+            float newPitch = currentPitch
+                    + pitchDelta * MathHelper.clamp(lerp * 0.82F, 0.001F, 1.0F);
+            client.player.setYaw(newYaw);
+            client.player.setPitch(MathHelper.clamp(newPitch, -90.0F, 90.0F));
+            client.player.setHeadYaw(newYaw);
+            client.player.setBodyYaw(newYaw);
+        } else {
+            // Legacy S-curve path (unchanged)
+            float progress = MathHelper.clamp(1.0F - Math.abs(yawDelta) / Math.max(1.0F, fov), 0.0F, 1.0F);
+            float sCurve = progress * progress * (3.0F - 2.0F * progress);
+            float lerp = MathHelper.clamp(baseSpeed * (0.6F + sCurve * 0.9F), 0.001F, 1.0F);
+            float newYaw = currentYaw + yawDelta * lerp;
+            float newPitch = currentPitch
+                    + pitchDelta * MathHelper.clamp(lerp * 0.82F, 0.001F, 1.0F);
+            client.player.setYaw(newYaw);
+            client.player.setPitch(MathHelper.clamp(newPitch, -90.0F, 90.0F));
+            client.player.setHeadYaw(newYaw);
+            client.player.setBodyYaw(newYaw);
+        }
     }
 
     static boolean isWithinLockDistance(double distanceSquared, double configuredRange) {
@@ -336,6 +346,7 @@ public final class AimAssistClient implements ClientModInitializer {
     private void clearRuntimeState() {
         clearTargetState();
         clearBedLockState();
+        humanizer.reset();
     }
 
     private boolean isAttackDown(MinecraftClient client) {
