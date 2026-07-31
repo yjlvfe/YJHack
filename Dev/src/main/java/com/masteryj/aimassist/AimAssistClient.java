@@ -33,8 +33,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Deterministic, line-of-sight AimAssist. Target retention is capped at 3.5 blocks and does not
- * change Minecraft's attack reach. While a bed is actually being broken, the bed owns the aim.
+ * AimAssist with line-of-sight target retention up to 6 blocks.
+ * Humanized movement option replaces the deterministic S-curve with
+ * micro-wobble, inconsistent speed, organic path, and body variation —
+ * no acquisition delay, no missed shots.
  */
 public final class AimAssistClient implements ClientModInitializer {
 
