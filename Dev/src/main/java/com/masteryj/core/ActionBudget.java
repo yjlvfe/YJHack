@@ -37,12 +37,7 @@ public final class ActionBudget {
     private final int[] maxPerModuleInOneTick = new int[MODULES];
     private int maxGlobalInOneTick;
 
-    /**
-     * Submit synthetic input for the next START_CLIENT_TICK flush.
-     *
-     * <p>Only one event can exist for a module in a tick. Duplicate or excessive submissions are
-     * rejected immediately instead of becoming backlog.
-     */
+    /** Submit synthetic input for the next START_CLIENT_TICK flush. */
     public void request(Module module, int pulses, BooleanSupplier guard, Runnable emitter) {
         if (module == null || pulses <= 0 || guard == null || emitter == null) return;
         int m = module.ordinal();
@@ -61,16 +56,13 @@ public final class ActionBudget {
         }
     }
 
-    /** Cancel pending work while preserving the rolling rate history. */
+    /** Cancel pending work while preserving rolling rate history. */
     public void cancel(Module module) {
         if (module == null) return;
         clearPending(module.ordinal());
     }
 
-    /**
-     * Clear one module's pending work, rolling history, and diagnostics state. Use this for a real
-     * gameplay-session gate such as disable, disconnect, death, focus loss, or world change.
-     */
+    /** Clear one module's pending work, rate history, and diagnostic state. */
     public void reset(Module module) {
         if (module == null) return;
         int m = module.ordinal();
@@ -101,6 +93,7 @@ public final class ActionBudget {
             int emitted = 0;
             if (countWithinWindow(m, nowNanos) < MAX_PER_SECOND_PER_MODULE) {
                 emitters[m].run();
+                notifyEmitted(module);
                 record(m, nowNanos);
                 emitted = 1;
                 emittedGlobal++;
@@ -168,6 +161,11 @@ public final class ActionBudget {
     private static void notifyRequested(Module module, int count) {
         if (module == Module.LEFT) DebugStats.onAutoLeftRequested(count);
         else DebugStats.onAutoRightRequested(count);
+    }
+
+    private static void notifyEmitted(Module module) {
+        if (module == Module.LEFT) DebugStats.onAutoLeftPulse();
+        else DebugStats.onAutoRightBlockPulse();
     }
 
     private static void notifyBudgetRejected(Module module, int count) {
