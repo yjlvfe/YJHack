@@ -2,21 +2,20 @@ package com.masteryj.aimassist;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.masteryj.core.DebugStats;
 import com.masteryj.core.GameplayGate;
 import com.masteryj.core.PhysicalKeyBinding;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.block.BedBlock;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.BlockItem;
-import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -29,7 +28,6 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -39,20 +37,25 @@ public final class AimAssistClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AimAssist");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
-    private static final int CURRENT_CONFIG_VERSION = 8;
-    private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
+    private static final int CURRENT_CONFIG_VERSION = 9;
+
+    /** Incremented only when Minecraft's own doAttack() accepted an attack against a player. */
+    private static long acceptedPlayerAttackSequence;
 
     private final Random random = new Random();
-    /** Fresh for one client tick only: avoids duplicate raycasts without stale visibility. */
     private final Map<Integer, AimSample> tickSampleCache = new HashMap<>();
+
     private World lastWorld;
     private PlayerEntity target;
-    private long lastConfigCheckAtNanos = Long.MIN_VALUE;
-    private FileTime lastKnownConfigWriteTime;
     private boolean toggleKeyWasDown;
     private boolean requireToggleRelease;
     private boolean attackWasDown;
     private boolean requireAttackRelease;
+
+    private boolean bedBreakLocked;
+    private BlockPos bedBreakPos;
+    private long bedLockAttackSequence;
+
     private float targetOffsetX;
     private float targetOffsetY;
     private float offsetVelocityX;
@@ -60,7 +63,7 @@ public final class AimAssistClient implements ClientModInitializer {
     private long lastOffsetUpdateNanos = Long.MIN_VALUE;
 
     public static Config config;
-    public static boolean enabled = false;
+    public static boolean enabled;
     public static int toggleKeyCode = -1;
     public static float speed = 0.28F;
     public static float smoothness = 0.45F;
@@ -70,38 +73,38 @@ public final class AimAssistClient implements ClientModInitializer {
     public void onInitializeClient() {
         config = loadConfig();
         applyRuntimeConfig(config);
-        ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("AimAssist", this::tickAimAssist));
+        ClientTickEvents.END_CLIENT_TICK.register(this::tickAimAssist);
+    }
+
+    /** Called by the MinecraftClient mixin after an accepted player attack. */
+    public static void onAcceptedPlayerAttack() {
+        acceptedPlayerAttackSequence++;
     }
 
     private void tickAimAssist(MinecraftClient client) {
         tickSampleCache.clear();
-        maybeReloadConfig();
         handleToggleKey(client);
 
-        boolean attackDown = isMouseDown(client, 0);
-        boolean useDown = isMouseDown(client, 1);
+        boolean attackDown = isAttackDown(client);
 
         if (client == null || client.world != lastWorld) {
             lastWorld = client == null ? null : client.world;
-            clearTarget();
+            clearAllLocks();
             requireAttackRelease = attackDown;
             attackWasDown = attackDown;
             return;
         }
 
-        boolean attackRising = attackDown && !attackWasDown;
         attackWasDown = attackDown;
 
         if (!enabled || !isInActiveGameplay(client)) {
             if (attackDown) requireAttackRelease = true;
-            clearTarget();
+            clearAllLocks();
             return;
         }
 
-        // A hold crossing a menu, focus loss, disable, death, or world transition must be released
-        // before AimAssist can acquire again. This prevents a stale held click from snapping aim.
         if (requireAttackRelease) {
-            clearTarget();
+            clearAllLocks();
             if (!attackDown) {
                 requireAttackRelease = false;
                 attackWasDown = false;
@@ -109,23 +112,15 @@ public final class AimAssistClient implements ClientModInitializer {
             return;
         }
 
-        boolean lookingAtBlock = client.crosshairTarget instanceof BlockHitResult;
-        boolean holdingPlaceableBlock = isHoldingPlaceableBlock(client);
-        boolean breakingBlock = client.interactionManager != null
-                && client.interactionManager.isBreakingBlock();
-        boolean blockAttackStarted = attackRising && lookingAtBlock;
-        boolean placingBlock = useDown && lookingAtBlock && holdingPlaceableBlock;
-
-        // Block actions always win, even when there is no existing target. The old target-only gate
-        // allowed a new player lock to be acquired on the same tick mining started.
-        if (shouldCancelForBlockAction(breakingBlock, blockAttackStarted, placingBlock)) {
+        // A bed is the only block that owns the aim while it is actively being broken.
+        // Other blocks do not cancel AimAssist. An accepted player attack explicitly breaks this lock.
+        if (updateBedBreakLock(client, attackDown)) {
             clearTarget();
             return;
         }
 
         if (!isLatchedTargetValid(client, target)) clearTarget();
 
-        // A new lock is only acquired while the real configured attack control is held.
         if (target == null) {
             if (!attackDown) return;
 
@@ -140,17 +135,53 @@ public final class AimAssistClient implements ClientModInitializer {
         if (target == null) return;
 
         AimSample sample = getAimSample(client, target);
-        // Never keep or steer a lock through terrain. Visibility is recalculated every tick.
-        if (sample == null) {
-            clearTarget();
-            return;
-        }
-        if (!AimAssistRangePolicy.isWithinDistance(sample.distanceSquared())) {
+        if (sample == null || !AimAssistRangePolicy.isWithinDistance(sample.distanceSquared())) {
             clearTarget();
             return;
         }
 
         applyAimAssist(client, sample, System.nanoTime());
+    }
+
+    private boolean updateBedBreakLock(MinecraftClient client, boolean attackDown) {
+        boolean breaking = client.interactionManager != null
+                && client.interactionManager.isBreakingBlock();
+
+        if (!bedBreakLocked && attackDown && breaking
+                && client.crosshairTarget instanceof BlockHitResult hit
+                && isBedAt(client, hit.getBlockPos())) {
+            bedBreakLocked = true;
+            bedBreakPos = hit.getBlockPos().toImmutable();
+            bedLockAttackSequence = acceptedPlayerAttackSequence;
+            clearTarget();
+        }
+
+        if (!bedBreakLocked) return false;
+
+        if (acceptedPlayerAttackSequence != bedLockAttackSequence) {
+            clearBedBreakLock();
+            return false;
+        }
+
+        if (!attackDown || !breaking || !isBedAt(client, bedBreakPos)) {
+            clearBedBreakLock();
+            return false;
+        }
+
+        return true;
+    }
+
+    static boolean shouldHoldBedAimLock(boolean locked,
+                                        boolean attackDown,
+                                        boolean breaking,
+                                        boolean bedStillPresent,
+                                        boolean acceptedPlayerAttack) {
+        return locked && attackDown && breaking && bedStillPresent && !acceptedPlayerAttack;
+    }
+
+    private boolean isBedAt(MinecraftClient client, BlockPos pos) {
+        return client != null && client.world != null && pos != null
+                && client.world.getBlockState(pos).getBlock() instanceof BedBlock;
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
@@ -183,9 +214,7 @@ public final class AimAssistClient implements ClientModInitializer {
     private boolean isTargetValid(MinecraftClient client, PlayerEntity candidate,
                                   double maxDistanceSquared, float allowedFov) {
         if (!isBasicTargetValid(client, candidate)
-                || client.player.squaredDistanceTo(candidate) > maxDistanceSquared) {
-            return false;
-        }
+                || client.player.squaredDistanceTo(candidate) > maxDistanceSquared) return false;
         AimSample sample = getAimSample(client, candidate);
         return sample != null && sample.distanceSquared() <= maxDistanceSquared
                 && insideFov(client, sample, allowedFov);
@@ -279,7 +308,8 @@ public final class AimAssistClient implements ClientModInitializer {
         float jitterX = (random.nextFloat() - 0.5F) * 0.01F;
         float jitterY = (random.nextFloat() - 0.5F) * 0.01F;
         float newYaw = currentYaw + yawDelta * lerp + jitterX;
-        float newPitch = currentPitch + pitchDelta * MathHelper.clamp(lerp * 0.82F, 0.001F, 1.0F) + jitterY;
+        float newPitch = currentPitch
+                + pitchDelta * MathHelper.clamp(lerp * 0.82F, 0.001F, 1.0F) + jitterY;
         client.player.setYaw(newYaw);
         client.player.setPitch(MathHelper.clamp(newPitch, -90.0F, 90.0F));
         client.player.setHeadYaw(newYaw);
@@ -287,7 +317,8 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     private void updateDynamicOffset(long now) {
-        if (lastOffsetUpdateNanos != Long.MIN_VALUE && now - lastOffsetUpdateNanos < 50_000_000L) return;
+        if (lastOffsetUpdateNanos != Long.MIN_VALUE
+                && now - lastOffsetUpdateNanos < 50_000_000L) return;
         lastOffsetUpdateNanos = now;
         float accel = 0.06F;
         offsetVelocityX += (float) (random.nextGaussian() * accel * 0.5D);
@@ -296,22 +327,6 @@ public final class AimAssistClient implements ClientModInitializer {
         offsetVelocityY *= 0.82F;
         targetOffsetX = MathHelper.clamp(targetOffsetX + offsetVelocityX, -0.8F, 0.8F);
         targetOffsetY = MathHelper.clamp(targetOffsetY + offsetVelocityY, -0.56F, 0.56F);
-    }
-
-    private boolean isHoldingPlaceableBlock(MinecraftClient client) {
-        if (client == null || client.player == null) return false;
-        return isBlockItem(client.player.getMainHandStack())
-                || isBlockItem(client.player.getOffHandStack());
-    }
-
-    private boolean isBlockItem(ItemStack stack) {
-        return stack != null && !stack.isEmpty() && stack.getItem() instanceof BlockItem;
-    }
-
-    static boolean shouldCancelForBlockAction(boolean breakingBlock,
-                                              boolean blockAttackStarted,
-                                              boolean placingBlock) {
-        return breakingBlock || blockAttackStarted || placingBlock;
     }
 
     static boolean isWithinLockDistance(double distanceSquared) {
@@ -327,10 +342,20 @@ public final class AimAssistClient implements ClientModInitializer {
         lastOffsetUpdateNanos = Long.MIN_VALUE;
     }
 
-    private boolean isMouseDown(MinecraftClient client, int button) {
-        if (client == null || client.options == null) return false;
-        if (button == 0) return PhysicalKeyBinding.isPressed(client, client.options.attackKey);
-        return button == 1 && PhysicalKeyBinding.isPressed(client, client.options.useKey);
+    private void clearBedBreakLock() {
+        bedBreakLocked = false;
+        bedBreakPos = null;
+        bedLockAttackSequence = acceptedPlayerAttackSequence;
+    }
+
+    private void clearAllLocks() {
+        clearTarget();
+        clearBedBreakLock();
+    }
+
+    private boolean isAttackDown(MinecraftClient client) {
+        return client != null && client.options != null
+                && PhysicalKeyBinding.isPressed(client, client.options.attackKey);
     }
 
     private void handleToggleKey(MinecraftClient client) {
@@ -355,10 +380,10 @@ public final class AimAssistClient implements ClientModInitializer {
                 saveConfig(config);
             }
             if (!enabled) {
-                boolean attackDown = isMouseDown(client, 0);
+                boolean attackDown = isAttackDown(client);
                 requireAttackRelease = attackDown;
                 attackWasDown = attackDown;
-                clearTarget();
+                clearAllLocks();
             }
             sendToggleMessage(client, enabled);
         }
@@ -367,25 +392,9 @@ public final class AimAssistClient implements ClientModInitializer {
 
     private void sendToggleMessage(MinecraftClient client, boolean on) {
         if (client == null || client.player == null) return;
-        Text text = Text.literal("AimAssist " + (on ? "enabled" : "disabled"))
+        Text message = Text.literal("AimAssist " + (on ? "enabled" : "disabled"))
                 .formatted(on ? Formatting.GREEN : Formatting.RED);
-        client.player.sendMessage(text, true);
-    }
-
-    private void maybeReloadConfig() {
-        long now = System.nanoTime();
-        if (lastConfigCheckAtNanos != Long.MIN_VALUE
-                && now - lastConfigCheckAtNanos < CONFIG_RELOAD_INTERVAL_NANOS) return;
-        lastConfigCheckAtNanos = now;
-        try {
-            if (!Files.exists(CONFIG_PATH)) return;
-            FileTime wt = Files.getLastModifiedTime(CONFIG_PATH);
-            if (lastKnownConfigWriteTime != null && wt.equals(lastKnownConfigWriteTime)) return;
-            config = loadConfig();
-            applyRuntimeConfig(config);
-        } catch (IOException e) {
-            LOGGER.warn("AimAssist config reload failed", e);
-        }
+        client.player.sendMessage(message, true);
     }
 
     private Config loadConfig() {
@@ -394,12 +403,12 @@ public final class AimAssistClient implements ClientModInitializer {
                 Config loaded = GSON.fromJson(Files.readString(CONFIG_PATH), Config.class);
                 if (loaded != null) {
                     loaded.normalize();
-                    lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
+                    saveConfig(loaded);
                     return loaded;
                 }
             }
         } catch (Exception e) {
-            LOGGER.warn("AimAssist config unreadable; using safe defaults", e);
+            LOGGER.warn("AimAssist config unreadable; using defaults", e);
         }
         Config fresh = new Config();
         fresh.normalize();
@@ -408,16 +417,7 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     private void saveConfig(Config cfg) {
-        if (cfg == null) return;
-        cfg.normalize();
-        applyRuntimeConfig(cfg);
-        try {
-            Files.createDirectories(CONFIG_PATH.getParent());
-            Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
-            lastKnownConfigWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
-        } catch (IOException e) {
-            LOGGER.warn("AimAssist config save failed", e);
-        }
+        saveConfigStatic(cfg);
     }
 
     public static void saveConfigStatic(Config cfg) {
