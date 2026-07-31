@@ -172,10 +172,16 @@ public final class AutoRightClient implements ClientModInitializer {
         // sequence-id handling, prediction, collision checks and final placement decision.
         restoreVanillaUse(client, false);
         boolean validCandidate = client.crosshairTarget instanceof BlockHitResult;
-        int pulses = placementPolicy.pulsesThisTick(cps,
-                enabled, activeGameplay, physicalDown, validCandidate);
-        if (jitterEnabled && pulses > 0) {
-            pulses = clickLimiter.acquire(System.nanoTime(), cps, true);
+        int pulses;
+        if (jitterEnabled) {
+            pulses = placementPolicy.pulsesThisTick(
+                    enabled, activeGameplay, physicalDown, validCandidate);
+            if (pulses > 0) {
+                pulses = clickLimiter.acquire(System.nanoTime(), cps, true);
+            }
+        } else {
+            pulses = placementPolicy.pulsesThisTick(cps,
+                    enabled, activeGameplay, physicalDown, validCandidate);
         }
         for (int i = 0; i < pulses; i++) {
             if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;

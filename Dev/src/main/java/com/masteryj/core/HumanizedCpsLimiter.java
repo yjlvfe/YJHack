@@ -4,16 +4,12 @@ import java.util.random.RandomGenerator;
 import java.util.random.RandomGeneratorFactory;
 
 /**
- * Humanized CPS limiter — variable inter-click timing with a hard ceiling of
- * 1 click per game tick (or 2 when CPS exceeds tick rate).
+ * Humanized CPS limiter — variable inter-click timing.
  *
- * <p>This is NOT a batch system. It's a real-time interval system:
- * the limiter tracks when the next click is due. Jitter means the interval
- * between clicks varies randomly, so the number of clicks in any given
- * second varies — but the long-term average stays at the configured CPS.
+ * <p>The jitter range scales with CPS: 10cps→±10%, 20cps→±15%, 40cps→±25%.
+ * Higher CPS = wider timing variation = harder for anti-cheat to pattern-match.
  *
- * <p>At most 1 click per call, or 2 when behind schedule. Missed calls
- * during lag are treated as \"no-op\" — no catch-up bursts.
+ * <p>At most 1 click per call, or 2 when behind schedule.
  */
 public final class HumanizedCpsLimiter {
 
@@ -21,8 +17,6 @@ public final class HumanizedCpsLimiter {
 
     private static final double JITTER_INTERCEPT = 5.0;
     private static final double JITTER_SLOPE = 0.5;
-    private static final double MICRO_MIN = 0.7;
-    private static final double MICRO_RANGE = 0.6;
 
     private static final RandomGenerator RNG =
             RandomGeneratorFactory.getDefault().create();
@@ -46,36 +40,32 @@ public final class HumanizedCpsLimiter {
         if (!initialized) {
             initialized = true;
             scheduleNext(nowNanos, cps);
-            // Emit first click immediately
             return 1;
         }
 
         if (nowNanos < nextClickAt) return 0;
 
-        // Click is due. Count 1, or 2 if we've fallen behind.
         int emitted = 1;
-        long nextBase = nowNanos;
-
-        if (nowNanos - nextClickAt > scheduleNextNanos(cps)) {
-            // We're more than one interval behind — emit 2 but skip the overshoot
+        if (nowNanos - nextClickAt > avgIntervalNs(cps)) {
             emitted = 2;
-            nextBase = nowNanos;
         }
 
-        scheduleNext(nextBase, cps);
+        scheduleNext(nowNanos, cps);
         return emitted;
     }
 
     private void scheduleNext(long now, int cps) {
         double baseNs = 1_000_000_000.0 / cps;
-        double jittered = baseNs * (0.85 + RNG.nextDouble() * 0.30);
+        double ratio = jitterRatio(cps);
+        // Jitter range scales with CPS: ratio from 10% to 25%
+        double minMultiplier = 1.0 - ratio;
+        double maxMultiplier = 1.0 + ratio;
+        double jittered = baseNs * (minMultiplier + RNG.nextDouble() * (maxMultiplier - minMultiplier));
         nextClickAt = now + (long) jittered;
     }
 
-    /** Average interval with jitter ratio factored in. */
-    private long scheduleNextNanos(int cps) {
-        double baseNs = 1_000_000_000.0 / cps;
-        return (long) (baseNs * 1.15);
+    private long avgIntervalNs(int cps) {
+        return (long) (1_000_000_000.0 / cps * 1.15);
     }
 
     public void clearTimingState() {

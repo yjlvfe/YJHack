@@ -20,6 +20,7 @@ public final class LegacyMultiVersionPlacementPolicy {
     private int phase;
     private boolean candidateWasValid;
 
+    /** Fixed-CPS timing gate. */
     public int pulsesThisTick(int configuredCps,
                               boolean enabled,
                               boolean activeGameplay,
@@ -46,6 +47,33 @@ public final class LegacyMultiVersionPlacementPolicy {
         }
         candidateWasValid = true;
         return pulses;
+    }
+
+    /**
+     * Policy check only — skips internal phase accumulator.
+     * Caller provides its own timing gate (e.g. HumanizedCpsLimiter).
+     * Returns 1 when conditions are met and placement is valid, 0 otherwise.
+     */
+    public int pulsesThisTick(boolean enabled,
+                              boolean activeGameplay,
+                              boolean physicalUseDown,
+                              boolean validPlacementCandidate) {
+        if (!enabled || !activeGameplay || !physicalUseDown) {
+            clearRuntimeState();
+            return 0;
+        }
+
+        if (!validPlacementCandidate) {
+            candidateWasValid = false;
+            return 0;
+        }
+
+        if (!candidateWasValid) {
+            candidateWasValid = true;
+            return 1;
+        }
+        candidateWasValid = true;
+        return 1;
     }
 
     public void clearRuntimeState() {
