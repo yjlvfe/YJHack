@@ -512,6 +512,9 @@ public final class ModGuiClient implements ClientModInitializer {
 
         private AutoLeftScreen(Screen parent) {
             super(parent, "Auto Left");
+            cfg = AutoLeftClient.config == null
+                    ? RecommendedProfiles.autoLeft()
+                    : AutoLeftClient.config.copy();
         }
 
         @Override protected String navId() { return "autoleft"; }
