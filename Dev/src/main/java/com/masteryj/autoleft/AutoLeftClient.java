@@ -70,6 +70,7 @@ public final class AutoLeftClient implements ClientModInitializer {
 
         boolean physicalDown = isMouseDown(client, 0);
         boolean rising = physicalDown && !physicalWasDown;
+        boolean activeGameplay = isInActiveGameplay(client);
 
         if (DebugStats.ENABLED) {
             if (rising) DebugStats.onAutoLeftPhysicalPress();
@@ -77,7 +78,7 @@ public final class AutoLeftClient implements ClientModInitializer {
                     config == null ? 0 : config.maxCps);
         }
 
-        if (!enabled || !isInActiveGameplay(client)) {
+        if (!enabled || !activeGameplay) {
             if (physicalDown) requireRelease = true;
             resetAutomation();
             physicalWasDown = physicalDown;
@@ -85,7 +86,7 @@ public final class AutoLeftClient implements ClientModInitializer {
         }
 
         // A button held through a menu, focus loss, death, disable, or world transition must be
-        // released before automation can start again.
+        // released before automation can start again. Vanilla input itself remains untouched.
         if (requireRelease) {
             resetAutomation();
             if (!physicalDown) {
@@ -94,13 +95,6 @@ public final class AutoLeftClient implements ClientModInitializer {
             } else {
                 physicalWasDown = true;
             }
-            return;
-        }
-
-        if (weaponCheck && !isHoldingAllowedWeapon(client)) {
-            if (physicalDown) requireRelease = true;
-            resetAutomation();
-            physicalWasDown = physicalDown;
             return;
         }
 
@@ -119,8 +113,10 @@ public final class AutoLeftClient implements ClientModInitializer {
             return;
         }
 
-        // Mining remains completely vanilla; no synthetic attack pulses while targeting blocks.
-        if (isLookingAtBlock(client)) {
+        boolean weaponAllowed = !weaponCheck || isHoldingAllowedWeapon(client);
+        boolean lookingAtBlock = isLookingAtBlock(client);
+        if (!shouldRunHeldAttack(enabled, activeGameplay, physicalDown, weaponAllowed, lookingAtBlock)) {
+            // Temporary weapon or crosshair changes pause the cadence without forcing a release.
             resetAutomation();
             return;
         }
@@ -131,17 +127,26 @@ public final class AutoLeftClient implements ClientModInitializer {
         ActionBudget.INSTANCE.request(ActionBudget.Module.LEFT, pulses,
                 () -> mayEmit(client),
                 () -> {
+                    // Unit-test fallback. Runtime dispatch calls MinecraftClient.doAttack().
                     KeyBinding.onKeyPressed(LEFT_MOUSE);
                     DebugStats.onAutoLeftPulse();
                 });
     }
 
     private boolean mayEmit(MinecraftClient client) {
-        return enabled
-                && isInActiveGameplay(client)
-                && isMouseDown(client, 0)
-                && !isLookingAtBlock(client)
-                && (!weaponCheck || isHoldingAllowedWeapon(client));
+        boolean activeGameplay = isInActiveGameplay(client);
+        boolean physicalDown = isMouseDown(client, 0);
+        boolean weaponAllowed = !weaponCheck || isHoldingAllowedWeapon(client);
+        boolean lookingAtBlock = isLookingAtBlock(client);
+        return shouldRunHeldAttack(enabled, activeGameplay, physicalDown, weaponAllowed, lookingAtBlock);
+    }
+
+    static boolean shouldRunHeldAttack(boolean enabled,
+                                       boolean activeGameplay,
+                                       boolean physicalDown,
+                                       boolean weaponAllowed,
+                                       boolean lookingAtBlock) {
+        return enabled && activeGameplay && physicalDown && weaponAllowed && !lookingAtBlock;
     }
 
     private void resetAutomation() {
@@ -173,9 +178,9 @@ public final class AutoLeftClient implements ClientModInitializer {
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
-        boolean hasPlayer = client.player != null;
-        boolean hasWorld = client.world != null;
-        return GameplayGate.active(hasPlayer, hasWorld,
+        boolean hasPlayer = client != null && client.player != null;
+        boolean hasWorld = client != null && client.world != null;
+        return client != null && GameplayGate.active(hasPlayer, hasWorld,
                 client.currentScreen != null, client.isWindowFocused(), client.mouse.isCursorLocked(),
                 hasPlayer && client.player.isAlive(), hasPlayer && client.player.isSpectator());
     }
@@ -314,7 +319,8 @@ public final class AutoLeftClient implements ClientModInitializer {
     }
 
     private static boolean isToggleBindingPressed(MinecraftClient client, int key) {
-        if (client.currentScreen != null || !client.isWindowFocused()) return false;
+        if (client == null || client.getWindow() == null
+                || client.currentScreen != null || !client.isWindowFocused()) return false;
         long handle = client.getWindow().getHandle();
         if (key >= 1000) return GLFW.glfwGetMouseButton(handle, key - 1000) == GLFW.GLFW_PRESS;
         return GLFW.glfwGetKey(handle, key) == GLFW.GLFW_PRESS;

@@ -9,7 +9,6 @@
     "ModGuiClientMixin",
     "AimAssistClientMixin",
     "AutoLeftClientMixin",
-    "AutoLeftHoldRepairClientMixin",
     "AutoRightClientMixin",
     "ActionBudgetMixin"
   ],

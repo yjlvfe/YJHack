@@ -74,6 +74,7 @@ public final class AutoRightClient implements ClientModInitializer {
 
         boolean mouseDown = isMouseDown(client, 1);
         boolean rising = mouseDown && !rightWasDown;
+        boolean activeGameplay = isInActiveGameplay(client);
 
         if (DebugStats.ENABLED) {
             DebugStats.setAutoRightConfiguredCps(config == null ? 0 : config.minCps,
@@ -81,17 +82,19 @@ public final class AutoRightClient implements ClientModInitializer {
             if (rising) DebugStats.onAutoRightPhysicalPress();
         }
 
-        if (!enabled || !isInActiveGameplay(client)) {
+        // Disabled or gated automation must never release the player's real use key. This preserves
+        // ordinary long holds for food, bows, shields, blocks and every other vanilla item.
+        if (!enabled || !activeGameplay) {
             if (mouseDown) requireRelease = true;
-            resetPress(true);
+            resetPress();
             rightWasDown = mouseDown;
             return;
         }
 
-        // Never resume an old held press after a menu, focus loss, disable, death, or world gate.
+        // Wait for a fresh press after a menu, focus loss, disable, death or world transition, but
+        // leave the current physical hold entirely owned by vanilla.
         if (requireRelease) {
-            suppressUseKey();
-            resetPress(false);
+            resetPress();
             if (!mouseDown) {
                 requireRelease = false;
                 rightWasDown = false;
@@ -102,7 +105,7 @@ public final class AutoRightClient implements ClientModInitializer {
         }
 
         if (!mouseDown) {
-            resetPress(false);
+            resetPress();
             rightWasDown = false;
             return;
         }
@@ -129,9 +132,11 @@ public final class AutoRightClient implements ClientModInitializer {
             pressInvalidated = true;
         }
 
-        // Holding the mouse while changing slot/item must never activate the replacement item.
+        // Holding the key while changing slot/item must not activate the replacement item.
         if (pressInvalidated) {
-            suppressUseKey();
+            if (shouldSuppressVanillaHold(enabled, activeGameplay, requireRelease, true, pressedKind)) {
+                suppressUseKey();
+            }
             scheduler.clear();
             ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
             rightWasDown = true;
@@ -139,7 +144,7 @@ public final class AutoRightClient implements ClientModInitializer {
         }
 
         switch (pressedKind) {
-            case SINGLE_PRESS -> handleSinglePress();
+            case SINGLE_PRESS -> handleSinglePress(activeGameplay);
             case BLOCK -> handleBlockHold(client, now);
             case PASS_THROUGH -> passThrough();
         }
@@ -147,9 +152,12 @@ public final class AutoRightClient implements ClientModInitializer {
         rightWasDown = true;
     }
 
-    private void handleSinglePress() {
-        // Vanilla used the item on the rising edge. Suppress all held repeats until release.
-        suppressUseKey();
+    private void handleSinglePress(boolean activeGameplay) {
+        // Vanilla used the item on the rising edge. Only discrete single-press items are suppressed
+        // while held; normal charge/use items and blocks retain their vanilla long-hold state.
+        if (shouldSuppressVanillaHold(enabled, activeGameplay, requireRelease, false, pressedKind)) {
+            suppressUseKey();
+        }
         scheduler.clear();
         ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
         DebugStats.onSinglePressSuppressed();
@@ -161,8 +169,9 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        // Stop vanilla's own held-repeat. Synthetic placement is paced by the shared dispatcher.
-        suppressUseKey();
+        // Never clear the real use key for blocks. Vanilla remains authoritative for uninterrupted
+        // hold behaviour; synthetic attempts only supplement it and Minecraft's own cooldown still
+        // decides whether each doItemUse() call is accepted.
         if (now - rightPressedAtNanos < BLOCK_HOLD_DELAY_NANOS) return;
 
         int pulses = scheduler.pulsesThisTick(pickCps());
@@ -171,6 +180,7 @@ public final class AutoRightClient implements ClientModInitializer {
         ActionBudget.INSTANCE.request(ActionBudget.Module.RIGHT, pulses,
                 () -> mayEmitBlock(client),
                 () -> {
+                    // Unit-test fallback. Runtime dispatch calls MinecraftClient.doItemUse().
                     KeyBinding.onKeyPressed(RIGHT_MOUSE);
                     DebugStats.onAutoRightBlockPulse();
                 });
@@ -179,8 +189,7 @@ public final class AutoRightClient implements ClientModInitializer {
     private void passThrough() {
         scheduler.clear();
         ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
-        // Do not touch the key state: bows, crossbows, tridents, shields, food and other
-        // charge/hold items must remain fully vanilla.
+        // Bows, crossbows, tridents, shields, food and other hold items remain fully vanilla.
     }
 
     private boolean mayEmitBlock(MinecraftClient client) {
@@ -196,6 +205,15 @@ public final class AutoRightClient implements ClientModInitializer {
                 && RightClickPolicy.classify(held, client.player) == RightClickPolicy.Kind.BLOCK;
     }
 
+    static boolean shouldSuppressVanillaHold(boolean enabled,
+                                             boolean activeGameplay,
+                                             boolean waitingForRelease,
+                                             boolean pressInvalidated,
+                                             RightClickPolicy.Kind kind) {
+        if (!enabled || !activeGameplay || waitingForRelease) return false;
+        return pressInvalidated || kind == RightClickPolicy.Kind.SINGLE_PRESS;
+    }
+
     static boolean pressIdentityChanged(int initialSlot, Object initialItem,
                                         int currentSlot, Object currentItem) {
         return initialSlot != currentSlot || initialItem != currentItem;
@@ -205,8 +223,7 @@ public final class AutoRightClient implements ClientModInitializer {
         KeyBinding.setKeyPressed(RIGHT_MOUSE, false);
     }
 
-    private void resetPress(boolean releaseKey) {
-        if (releaseKey) suppressUseKey();
+    private void resetPress() {
         scheduler.clear();
         ActionBudget.INSTANCE.cancel(ActionBudget.Module.RIGHT);
         rightPressedAtNanos = 0L;
@@ -230,9 +247,9 @@ public final class AutoRightClient implements ClientModInitializer {
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
-        boolean hasPlayer = client.player != null;
-        boolean hasWorld = client.world != null;
-        return GameplayGate.active(hasPlayer, hasWorld,
+        boolean hasPlayer = client != null && client.player != null;
+        boolean hasWorld = client != null && client.world != null;
+        return client != null && GameplayGate.active(hasPlayer, hasWorld,
                 client.currentScreen != null, client.isWindowFocused(), client.mouse.isCursorLocked(),
                 hasPlayer && client.player.isAlive(), hasPlayer && client.player.isSpectator());
     }
@@ -250,7 +267,7 @@ public final class AutoRightClient implements ClientModInitializer {
             saveConfig(config);
             if (!enabled) {
                 requireRelease = isMouseDown(client, 1);
-                resetPress(true);
+                resetPress();
             }
             sendToggleMessage(client, enabled, "AutoRight");
         }
@@ -366,7 +383,8 @@ public final class AutoRightClient implements ClientModInitializer {
     }
 
     private static boolean isToggleBindingPressed(MinecraftClient client, int key) {
-        if (client.currentScreen != null || !client.isWindowFocused()) return false;
+        if (client == null || client.getWindow() == null
+                || client.currentScreen != null || !client.isWindowFocused()) return false;
         long handle = client.getWindow().getHandle();
         if (key >= 1000) return GLFW.glfwGetMouseButton(handle, key - 1000) == GLFW.GLFW_PRESS;
         return GLFW.glfwGetKey(handle, key) == GLFW.GLFW_PRESS;

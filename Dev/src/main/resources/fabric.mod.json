@@ -16,7 +16,6 @@
       "com.masteryj.tracker.TrackerClient",
       "com.masteryj.aimassist.AimAssistClient",
       "com.masteryj.autoleft.AutoLeftClient",
-      "com.masteryj.autoleft.AutoLeftHoldRepairClient",
       "com.masteryj.autoright.AutoRightClient",
       "com.masteryj.ninjabridge.NinjaBridgeClient"
     ]
