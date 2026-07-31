@@ -1,14 +1,17 @@
 package com.masteryj.modgui;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.function.DoubleConsumer;
-import java.util.function.Supplier;
-
+import com.masteryj.aimassist.AimAssistClient;
+import com.masteryj.autoleft.AutoLeftClient;
+import com.masteryj.autoright.AutoRightClient;
+import com.masteryj.modgui.component.KeybindButton;
+import com.masteryj.modgui.component.ThemeSlider;
+import com.masteryj.modgui.component.ToggleSwitch;
+import com.masteryj.modgui.theme.YjTheme;
+import com.masteryj.ninjabridge.NinjaBridgeClient;
+import com.masteryj.tracker.TrackerClient;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
@@ -19,1141 +22,605 @@ import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.math.MathHelper;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.function.DoubleConsumer;
 
-import com.masteryj.aimassist.AimAssistClient;
-import com.masteryj.autoleft.AutoLeftClient;
-import com.masteryj.autoright.AutoRightClient;
-import com.masteryj.ninjabridge.NinjaBridgeClient;
-import com.masteryj.tracker.TrackerClient;
-import com.masteryj.modgui.theme.YjTheme;
-import com.masteryj.modgui.component.KeybindButton;
-import com.masteryj.modgui.component.ThemeSlider;
-import com.masteryj.modgui.component.ToggleSwitch;
-
-/**
- * YJHack in-game control panel.
- *
- * <p>Rebuilt 2026-07-23 (v2). Key differences from the prior version:
- * <ul>
- *   <li><b>No vanilla blur / darkening.</b> {@link YjScreen#renderBackground} is
- *       overridden to a single very light tint (~0x22 alpha) — it never calls
- *       {@code super.renderBackground()}, so {@code Screen.render → renderBackground →
- *       applyBlur()/renderDarkening()} never runs. The world and nearby players stay
- *       clearly visible; the previous fullscreen blur was the cause of both the
- *       "too dark" look and the render-thread stall with Iris/Sodium loaded.</li>
- *   <li><b>Real custom controls</b> (toggle switches, sliders with numeric entry,
- *       keybind capture, status chips, hover tooltips) instead of vanilla buttons.</li>
- *   <li><b>Typed config</b> — each settings screen edits the module's OWN
- *       {@code Config} type and pushes it via the module's typed
- *       {@code applyRuntimeConfig()} / {@code saveConfigStatic()} methods. No
- *       reflection, no field-name copying between mismatched objects.</li>
- *   <li><b>No per-frame / per-keystroke saving.</b> Edits apply live in memory;
- *       the file is written on a short debounce, on slider release, on Save, and on
- *       close. Sliders never write the config file while being dragged.</li>
- * </ul>
- */
+/** Compact settings UI with automatic persistence and no manual Save buttons. */
 public final class ModGuiClient implements ClientModInitializer {
-   private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-ModGui");
 
-   private KeyBinding openGuiKey;
+    private KeyBinding openGuiKey;
 
-   @Override
-   public void onInitializeClient() {
-      this.openGuiKey = KeyBindingHelper.registerKeyBinding(
-         new KeyBinding("key.modgui.open", InputUtil.Type.KEYSYM, 344, "category.modgui"));
-      ClientTickEvents.END_CLIENT_TICK.register(client -> {
-         while (this.openGuiKey.wasPressed()) {
-            if (!(client.currentScreen instanceof YjScreen)) {
-               client.setScreen(new DashboardScreen(null));
+    @Override
+    public void onInitializeClient() {
+        openGuiKey = KeyBindingHelper.registerKeyBinding(
+                new KeyBinding("key.modgui.open", InputUtil.Type.KEYSYM, 344, "category.modgui"));
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            while (openGuiKey.wasPressed()) {
+                if (!(client.currentScreen instanceof SimpleScreen)) {
+                    client.setScreen(new DashboardScreen(null));
+                }
             }
-         }
-      });
-   }
+        });
+    }
 
-   private record NavItem(String id, String label) {
-   }
+    private static Screen screenFor(String id, Screen parent) {
+        return switch (id) {
+            case "autoleft" -> new AutoLeftScreen(parent);
+            case "autoright" -> new AutoRightScreen(parent);
+            case "ninjabridge" -> new NinjaBridgeScreen(parent);
+            case "aimassist" -> new AimAssistScreen(parent);
+            case "tracker" -> new TrackerScreen(parent);
+            default -> new DashboardScreen(parent);
+        };
+    }
 
-   private static final List<NavItem> NAV = List.of(
-      new NavItem("dashboard", "Dashboard"),
-      new NavItem("autoleft", "Auto Left"),
-      new NavItem("autoright", "Auto Right"),
-      new NavItem("ninjabridge", "Ninja Bridge"),
-      new NavItem("aimassist", "AimAssist"),
-      new NavItem("tracker", "Tracker")
-   );
+    private abstract static class SimpleScreen extends Screen {
+        private static final long AUTO_SAVE_DELAY_NANOS = 180_000_000L;
 
-   private static Screen screenFor(String id, Screen dashboard) {
-      return switch (id) {
-         case "autoleft" -> new AutoLeftScreen(dashboard);
-         case "autoright" -> new AutoRightScreen(dashboard);
-         case "ninjabridge" -> new NinjaBridgeScreen(dashboard);
-         case "aimassist" -> new AimAssistScreen(dashboard);
-         case "tracker" -> new TrackerScreen(dashboard);
-         default -> new DashboardScreen(null);
-      };
-   }
+        protected final Screen parent;
+        private boolean dirty;
+        private long lastEditNanos;
 
-   private abstract static class YjScreen extends Screen {
-      private record Help(int x, int y, int w, int h, List<Text> lines) {
-      }
+        protected SimpleScreen(Screen parent, String title) {
+            super(Text.literal(title));
+            this.parent = parent;
+        }
 
-      protected final Screen parent;
-      private final List<Help> helps = new ArrayList<>();
-      private List<Text> pendingTooltip;
-      private String toastMessage;
-      private long toastUntilNanos;
-      protected boolean dirty;
-      private long lastEditNanos;
+        protected void applyLive() {
+        }
 
-      protected YjScreen(Screen parent, String title) {
-         super(Text.literal(title));
-         this.parent = parent;
-      }
+        protected void commit() {
+        }
 
-      protected abstract String navId();
+        protected final void markEdited() {
+            applyLive();
+            dirty = true;
+            lastEditNanos = System.nanoTime();
+        }
 
-      protected void applyLive() {
-      }
+        protected final void saveNow() {
+            applyLive();
+            commit();
+            dirty = false;
+        }
 
-      protected void commit() {
-      }
+        @Override
+        public boolean shouldPause() {
+            return false;
+        }
 
-      @Override
-      public boolean shouldPause() {
-         return false;
-      }
+        protected int panelW() {
+            return Math.max(300, Math.min(430, width - 20));
+        }
 
-      protected int winW() {
-         return Math.max(300, Math.min(452, this.width - 20));
-      }
+        protected int panelH() {
+            return Math.max(220, Math.min(340, height - 20));
+        }
 
-      protected int winH() {
-         return Math.max(210, Math.min(300, this.height - 20));
-      }
+        protected int panelX() {
+            return (width - panelW()) / 2;
+        }
 
-      protected int winX() {
-         return (this.width - winW()) / 2;
-      }
+        protected int panelY() {
+            return (height - panelH()) / 2;
+        }
 
-      protected int winY() {
-         return (this.height - winH()) / 2;
-      }
+        protected int contentX() {
+            return panelX() + 18;
+        }
 
-      protected int headerH() {
-         return 30;
-      }
+        protected int contentW() {
+            return panelW() - 36;
+        }
 
-      protected int footerH() {
-         return 28;
-      }
+        protected int contentTop() {
+            return panelY() + 46;
+        }
 
-      protected int sidebarW() {
-         return Math.min(110, Math.max(84, winW() / 3));
-      }
+        protected int footerY() {
+            return panelY() + panelH() - 30;
+        }
 
-      protected int contentX() {
-         return winX() + sidebarW() + YjTheme.PAD;
-      }
-
-      protected int contentTop() {
-         return winY() + headerH() + 8;
-      }
-
-      protected int contentRight() {
-         return winX() + winW() - YjTheme.PAD;
-      }
-
-      protected int contentW() {
-         return contentRight() - contentX();
-      }
-
-      protected int footerY() {
-         return winY() + winH() - footerH();
-      }
-
-      protected void markEdited() {
-         this.applyLive();
-         this.dirty = true;
-         this.lastEditNanos = System.nanoTime();
-      }
-
-      protected void showToast(String message) {
-         this.toastMessage = message;
-         this.toastUntilNanos = System.nanoTime() + 1_600_000_000L;
-      }
-
-      @Override
-      public void tick() {
-         super.tick();
-         if (this.dirty && System.nanoTime() - this.lastEditNanos > 350_000_000L) {
-            this.commit();
-            this.dirty = false;
-         }
-      }
-
-      @Override
-      public void close() {
-         if (this.dirty) {
-            this.commit();
-            this.dirty = false;
-         }
-         if (this.client != null) {
-            this.client.setScreen(this.parent);
-         }
-      }
-
-      @Override
-      public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
-      }
-
-      @Override
-      public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         this.pendingTooltip = null;
-         ctx.fill(0, 0, this.width, this.height, YjTheme.SCREEN_TINT);
-         this.renderChrome(ctx, mouseX, mouseY);
-         this.renderContent(ctx, mouseX, mouseY, delta);
-         super.render(ctx, mouseX, mouseY, delta);
-         this.renderHelpTooltips(mouseX, mouseY);
-         this.renderTooltipAndToast(ctx, mouseX, mouseY);
-      }
-
-      protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-      }
-
-      protected void renderChrome(DrawContext ctx, int mouseX, int mouseY) {
-         int x = winX();
-         int y = winY();
-         int w = winW();
-         int h = winH();
-         YjTheme.panel(ctx, x, y, w, h, YjTheme.PANEL, YjTheme.BORDER);
-
-         ctx.fill(x + 1, y + 1, x + w - 1, y + headerH(), YjTheme.HEADER);
-         ctx.fill(x + 1, y + headerH() - 1, x + w - 1, y + headerH(), YjTheme.ACCENT);
-         TextRenderer tr = this.textRenderer;
-         ctx.drawText(tr, Text.literal("YJHack").formatted(Formatting.BOLD), x + 12, y + 7, YjTheme.TEXT, false);
-         ctx.drawText(tr, "Client", x + 12 + tr.getWidth("YJHack") + 5, y + 8, YjTheme.ACCENT, false);
-         String status = headerStatus();
-         if (status != null) {
-            ctx.drawText(tr, status, x + w - 12 - tr.getWidth(status), y + 8, YjTheme.TEXT_DIM, false);
-         }
-
-         int sbTop = y + headerH();
-         int sbBottom = y + h;
-         ctx.fill(x + 1, sbTop, x + sidebarW(), sbBottom - 1, YjTheme.SIDEBAR);
-         ctx.fill(x + sidebarW(), sbTop, x + sidebarW() + 1, sbBottom - 1, YjTheme.BORDER_SOFT);
-         renderNav(ctx, mouseX, mouseY);
-      }
-
-      protected String headerStatus() {
-         return null;
-      }
-
-      private void renderNav(DrawContext ctx, int mouseX, int mouseY) {
-         TextRenderer tr = this.textRenderer;
-         int x = winX() + 8;
-         int w = sidebarW() - 12;
-         int y = winY() + headerH() + 8;
-         for (NavItem item : NAV) {
-            boolean active = item.id().equals(navId());
-            boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + 22;
-            if (active) {
-               ctx.fill(x, y, x + w, y + 22, 0x3335E0C8);
-               ctx.fill(x, y, x + 2, y + 22, YjTheme.ACCENT);
-            } else if (hovered) {
-               ctx.fill(x, y, x + w, y + 22, YjTheme.CTRL_HOVER);
+        @Override
+        public void tick() {
+            super.tick();
+            if (dirty && System.nanoTime() - lastEditNanos >= AUTO_SAVE_DELAY_NANOS) {
+                saveNow();
             }
-            ctx.drawText(tr, item.label(), x + 8, y + 7, active ? YjTheme.TEXT : YjTheme.TEXT_DIM, false);
-            y += 24;
-         }
-      }
+        }
 
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (button == 0) {
-            int x = winX() + 8;
-            int w = sidebarW() - 12;
-            int y = winY() + headerH() + 8;
-            for (NavItem item : NAV) {
-               if (mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + 22) {
-                  if (!item.id().equals(navId()) && this.client != null) {
-                     if (this.dirty) {
-                        this.commit();
-                        this.dirty = false;
-                     }
-                     Screen dash = (this.parent instanceof DashboardScreen) ? this.parent : new DashboardScreen(null);
-                     this.client.setScreen("dashboard".equals(item.id()) ? new DashboardScreen(null) : screenFor(item.id(), dash));
-                  }
-                  return true;
-               }
-               y += 24;
+        @Override
+        public boolean mouseReleased(double mouseX, double mouseY, int button) {
+            boolean handled = super.mouseReleased(mouseX, mouseY, button);
+            if (dirty) saveNow();
+            return handled;
+        }
+
+        @Override
+        public void close() {
+            if (dirty) saveNow();
+            if (client != null) client.setScreen(parent);
+        }
+
+        @Override
+        public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+            // No vanilla blur or darkening.
+        }
+
+        @Override
+        public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+            ctx.fill(0, 0, width, height, YjTheme.SCREEN_TINT);
+            YjTheme.panel(ctx, panelX(), panelY(), panelW(), panelH(), YjTheme.PANEL, YjTheme.BORDER);
+            ctx.fill(panelX() + 1, panelY() + 1, panelX() + panelW() - 1,
+                    panelY() + 32, YjTheme.HEADER);
+            ctx.fill(panelX() + 1, panelY() + 31, panelX() + panelW() - 1,
+                    panelY() + 32, YjTheme.ACCENT);
+            ctx.drawText(textRenderer, Text.literal(title.getString()).formatted(Formatting.BOLD),
+                    panelX() + 14, panelY() + 11, YjTheme.TEXT, false);
+            renderLabels(ctx);
+            super.render(ctx, mouseX, mouseY, delta);
+        }
+
+        protected void renderLabels(DrawContext ctx) {
+        }
+
+        protected ThemeSlider addSlider(int x, int y, int totalW, String label,
+                                        double min, double max, double value,
+                                        boolean integer, DoubleConsumer setter) {
+            int fieldW = 48;
+            int sliderW = Math.max(80, totalW - fieldW - 7);
+            boolean[] syncing = {false};
+
+            TextFieldWidget field = new TextFieldWidget(textRenderer,
+                    x + sliderW + 7, y, fieldW, 22, Text.literal(label));
+            field.setMaxLength(8);
+            field.setText(integer ? String.valueOf((int) Math.round(value)) : YjTheme.fmt(value));
+
+            ThemeSlider slider = new ThemeSlider(x, y, sliderW, 22,
+                    label, min, max, value, integer, v -> {
+                setter.accept(v);
+                if (!syncing[0]) {
+                    syncing[0] = true;
+                    field.setText(integer ? String.valueOf((int) Math.round(v)) : YjTheme.fmt(v));
+                    syncing[0] = false;
+                }
+                markEdited();
+            });
+
+            field.setChangedListener(text -> {
+                if (syncing[0]) return;
+                try {
+                    double parsed = MathHelper.clamp(Double.parseDouble(text.trim()), min, max);
+                    syncing[0] = true;
+                    slider.setDomainQuiet(parsed);
+                    syncing[0] = false;
+                    setter.accept(parsed);
+                    markEdited();
+                } catch (NumberFormatException ignored) {
+                    // Allow partial typing; the previous valid value remains active.
+                }
+            });
+
+            addDrawableChild(slider);
+            addDrawableChild(field);
+            return slider;
+        }
+
+        protected void addFooter(Runnable reset) {
+            addDrawableChild(ButtonWidget.builder(Text.literal("Reset"), button -> reset.run())
+                    .dimensions(panelX() + panelW() - 78, footerY(), 64, 20).build());
+            addDrawableChild(ButtonWidget.builder(Text.literal("‹ Back"), button -> close())
+                    .dimensions(panelX() + 14, footerY(), 64, 20).build());
+        }
+    }
+
+    private static final class DashboardScreen extends SimpleScreen {
+        private DashboardScreen(Screen parent) {
+            super(parent, "YJHack");
+        }
+
+        @Override
+        protected int panelH() {
+            return Math.max(250, Math.min(300, height - 20));
+        }
+
+        @Override
+        protected void init() {
+            int x = contentX();
+            int y = contentTop();
+            int w = contentW();
+            addModuleButton(x, y, w, "Auto Left", "autoleft");
+            addModuleButton(x, y + 34, w, "Auto Right", "autoright");
+            addModuleButton(x, y + 68, w, "Ninja Bridge", "ninjabridge");
+            addModuleButton(x, y + 102, w, "AimAssist", "aimassist");
+            addModuleButton(x, y + 136, w, "Tracker", "tracker");
+            addDrawableChild(ButtonWidget.builder(Text.literal("Close"), button -> close())
+                    .dimensions(panelX() + panelW() - 78, footerY(), 64, 20).build());
+        }
+
+        private void addModuleButton(int x, int y, int w, String label, String id) {
+            addDrawableChild(ButtonWidget.builder(Text.literal(label), button -> {
+                if (client != null) client.setScreen(screenFor(id, this));
+            }).dimensions(x, y, w, 26).build());
+        }
+
+        @Override
+        protected void renderLabels(DrawContext ctx) {
+            ctx.drawText(textRenderer, "Simple controls • automatic saving",
+                    contentX(), panelY() + 34, YjTheme.TEXT_MUTED, false);
+        }
+    }
+
+    private static final class AutoLeftScreen extends SimpleScreen {
+        private final AutoLeftClient.Config cfg = copy();
+        private KeybindButton keybind;
+
+        private AutoLeftScreen(Screen parent) {
+            super(parent, "Auto Left");
+        }
+
+        private static AutoLeftClient.Config copy() {
+            AutoLeftClient.Config result = new AutoLeftClient.Config();
+            AutoLeftClient.Config source = AutoLeftClient.config;
+            if (source != null) {
+                result.configVersion = source.configVersion;
+                result.enabled = source.enabled;
+                result.toggleKeyCode = source.toggleKeyCode;
+                result.cps = source.cps;
             }
-         }
-         return super.mouseClicked(mouseX, mouseY, button);
-      }
+            return result;
+        }
 
-      protected void addHelp(int x, int y, int w, int h, String... lines) {
-         List<Text> t = new ArrayList<>();
-         for (String l : lines) {
-            t.add(Text.literal(l));
-         }
-         this.helps.add(new Help(x, y, w, h, t));
-      }
+        @Override protected void applyLive() { AutoLeftClient.applyRuntimeConfig(cfg); }
+        @Override protected void commit() { AutoLeftClient.saveConfigStatic(cfg); }
 
-      protected void clearHelps() {
-         this.helps.clear();
-      }
-
-      private void renderHelpTooltips(int mouseX, int mouseY) {
-         for (Help help : this.helps) {
-            if (mouseX >= help.x() && mouseX <= help.x() + help.w() && mouseY >= help.y() && mouseY <= help.y() + help.h()) {
-               this.pendingTooltip = help.lines();
-               return;
-            }
-         }
-      }
-
-      private void renderTooltipAndToast(DrawContext ctx, int mouseX, int mouseY) {
-         if (this.pendingTooltip != null && !this.pendingTooltip.isEmpty()) {
-            ctx.drawTooltip(this.textRenderer, this.pendingTooltip, mouseX, mouseY);
-         }
-         if (this.toastMessage != null && System.nanoTime() < this.toastUntilNanos) {
-            TextRenderer tr = this.textRenderer;
-            int tw = tr.getWidth(this.toastMessage) + 20;
-            int tx = winX() + winW() - tw - 12;
-            int ty = footerY() - 24;
-            YjTheme.panel(ctx, tx, ty, tw, 18, 0xE01B2A22, YjTheme.SUCCESS);
-            ctx.fill(tx, ty, tx + 2, ty + 18, YjTheme.SUCCESS);
-            ctx.drawText(tr, this.toastMessage, tx + 10, ty + 5, YjTheme.TEXT, false);
-         }
-      }
-
-      protected void drawHeading(DrawContext ctx, String title, String subtitle) {
-         TextRenderer tr = this.textRenderer;
-         ctx.drawText(tr, Text.literal(title).formatted(Formatting.BOLD), contentX(), contentTop(), YjTheme.TEXT, false);
-         if (subtitle != null) {
-            ctx.drawText(tr, subtitle, contentX(), contentTop() + 11, YjTheme.TEXT_MUTED, false);
-         }
-         ctx.fill(contentX(), contentTop() + 22, contentRight(), contentTop() + 23, YjTheme.DIVIDER);
-      }
-
-      protected void addStatusChip(DrawContext ctx, int x, int y, boolean on) {
-         String s = on ? "ENABLED" : "DISABLED";
-         TextRenderer tr = this.textRenderer;
-         int w = tr.getWidth(s) + 10;
-         int col = on ? YjTheme.SUCCESS : YjTheme.TEXT_MUTED;
-         YjTheme.pill(ctx, x, y, w, 11, (col & 0x00FFFFFF) | 0x33000000);
-         ctx.drawText(tr, Text.literal(s).formatted(Formatting.BOLD), x + 5, y + 2, col, false);
-      }
-
-      protected ThemeSlider addSlider(int x, int y, int totalW, String label,
-                                      double min, double max, double value, boolean asInt, DoubleConsumer setter) {
-         int fieldW = 46;
-         int sliderW = Math.max(60, totalW - fieldW - 6);
-         boolean[] guard = {false};
-         TextFieldWidget field = new TextFieldWidget(this.textRenderer, x + sliderW + 6, y, fieldW, YjTheme.CTRL_H + 2, Text.literal(label));
-         field.setMaxLength(8);
-         field.setText(asInt ? String.valueOf((int) Math.round(value)) : YjTheme.fmt(value));
-         ThemeSlider slider = new ThemeSlider(x, y, sliderW, YjTheme.CTRL_H + 2, label, min, max, value, asInt, v -> {
-            setter.accept(v);
-            if (!guard[0]) {
-               guard[0] = true;
-               field.setText(asInt ? String.valueOf((int) Math.round(v)) : YjTheme.fmt(v));
-               guard[0] = false;
-            }
-            this.markEdited();
-         });
-         field.setChangedListener(s -> {
-            if (guard[0]) return;
-            try {
-               double v = MathHelper.clamp(Double.parseDouble(s.trim()), min, max);
-               guard[0] = true;
-               slider.setDomainQuiet(v);
-               guard[0] = false;
-               setter.accept(v);
-               this.markEdited();
-            } catch (NumberFormatException ignored) {
-            }
-         });
-         this.addDrawableChild(slider);
-         this.addDrawableChild(field);
-         return slider;
-      }
-
-      protected void addActionBar(Runnable onReset) {
-         int y = footerY() + (footerH() - YjTheme.CTRL_H) / 2;
-         int right = winX() + winW() - YjTheme.PAD;
-         this.addDrawableChild(ButtonWidget.builder(Text.literal("Save"), b -> {
-            this.commit();
-            this.dirty = false;
-            this.showToast("Settings saved");
-         }).dimensions(right - 66, y, 66, YjTheme.CTRL_H).build());
-         this.addDrawableChild(ButtonWidget.builder(Text.literal("Reset"), b -> onReset.run())
-            .dimensions(right - 66 - 8 - 56, y, 56, YjTheme.CTRL_H).build());
-         this.addDrawableChild(ButtonWidget.builder(Text.literal("‹ Back"), b -> this.close())
-            .dimensions(contentX(), y, 52, YjTheme.CTRL_H).build());
-      }
-   }
-
-   private static final class DashboardScreen extends YjScreen {
-      private record Card(int x, int y, int w, int h, String id, String label, String desc,
-                          Supplier<Boolean> enabled, Supplier<String> summary) {
-         boolean contains(double mx, double my) {
-            return mx >= x && mx <= x + w && my >= y && my <= y + h;
-         }
-      }
-
-      private final List<Card> cards = new ArrayList<>();
-
-      private DashboardScreen(Screen parent) {
-         super(parent, "Dashboard");
-      }
-
-      @Override
-      protected String navId() {
-         return "dashboard";
-      }
-
-      @Override
-      protected String headerStatus() {
-         return enabledCount() + " active";
-      }
-
-      private static int enabledCount() {
-         int n = 0;
-         if (AutoLeftClient.config != null && AutoLeftClient.config.enabled) n++;
-         if (AutoRightClient.config != null && AutoRightClient.config.enabled) n++;
-         if (NinjaBridgeClient.config != null && NinjaBridgeClient.config.enabled) n++;
-         if (AimAssistClient.config != null && AimAssistClient.config.enabled) n++;
-         if (TrackerClient.config != null && TrackerClient.config.enabled) n++;
-         return n;
-      }
-
-      @Override
-      protected void init() {
-         this.cards.clear();
-         this.clearHelps();
-         int gap = 8;
-         int cols = contentW() >= 300 ? 2 : 1;
-         int cardW = (contentW() - gap * (cols - 1)) / cols;
-         int cardH = 52;
-         int x0 = contentX();
-         int y0 = contentTop() + 28;
-         int i = 0;
-         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "autoleft", "Auto Left", "Left-click automation",
-            () -> AutoLeftClient.config != null && AutoLeftClient.config.enabled,
-            () -> AutoLeftClient.config != null ? AutoLeftClient.config.toggleKeyCode : -1,
-            () -> AutoLeftClient.config == null ? "" : "CPS " + AutoLeftClient.config.minCps + "-" + AutoLeftClient.config.maxCps,
-            AutoLeftClient.config != null && AutoLeftClient.config.weaponCheck ? "Weapon mode: on" : "Weapon mode: off");
-         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "autoright", "Auto Right", "Right-click / blocks",
-            () -> AutoRightClient.config != null && AutoRightClient.config.enabled,
-            () -> AutoRightClient.config != null ? AutoRightClient.config.toggleKeyCode : -1,
-            () -> AutoRightClient.config == null ? "" : "CPS " + AutoRightClient.config.minCps + "-" + AutoRightClient.config.maxCps,
-            AutoRightClient.config != null && AutoRightClient.config.blockMode ? "Block mode: on" : "Block mode: off",
-            "Fire Charge / pearls: one use per press");
-         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "ninjabridge", "Ninja Bridge", "Auto-sneak bridging",
-            () -> NinjaBridgeClient.config != null && NinjaBridgeClient.config.enabled,
-            () -> NinjaBridgeClient.config != null ? NinjaBridgeClient.config.toggleKeyCode : -1,
-            () -> NinjaBridgeClient.config == null ? "" : (NinjaBridgeClient.config.autoSwitch ? "Auto-switch on" : "Auto-switch off"));
-         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "aimassist", "AimAssist", "Smooth target tracking",
-            () -> AimAssistClient.config != null && AimAssistClient.config.enabled,
-            () -> AimAssistClient.config != null ? AimAssistClient.config.toggleKeyCode : -1,
-            () -> AimAssistClient.config == null ? "" : "Speed " + YjTheme.fmt(AimAssistClient.config.speed),
-            AimAssistClient.config == null ? "" : "FOV " + YjTheme.fmt(AimAssistClient.config.fov));
-         i = addCard(i, cols, cardW, cardH, gap, x0, y0, "tracker", "Tracker", "Hidden-enemy HUD + box",
-            () -> TrackerClient.config != null && TrackerClient.config.enabled,
-            () -> TrackerClient.config != null ? TrackerClient.config.toggleKeyCode : -1,
-            () -> TrackerClient.config == null ? "" : "Range " + YjTheme.fmt(TrackerClient.config.range),
-            TrackerClient.config != null && TrackerClient.config.ignoreOwnTeam ? "Ignores own team" : "Tracks all teams");
-      }
-
-      private int addCard(int i, int cols, int cardW, int cardH, int gap, int x0, int y0,
-                          String id, String label, String desc,
-                          Supplier<Boolean> enabled, Supplier<Integer> key, Supplier<String> summary,
-                          String... extraTip) {
-         int col = i % cols;
-         int row = i / cols;
-         int x = x0 + col * (cardW + gap);
-         int y = y0 + row * (cardH + gap);
-         this.cards.add(new Card(x, y, cardW, cardH, id, label, desc, enabled, summary));
-         List<String> tip = new ArrayList<>();
-         tip.add(label);
-         tip.add("Toggle key: " + YjTheme.keyName(key.get()).getString());
-         for (String e : extraTip) {
-            if (e != null && !e.isEmpty()) tip.add(e);
-         }
-         tip.add("Click to configure");
-         addHelp(x, y, cardW, cardH, tip.toArray(new String[0]));
-         return i + 1;
-      }
-
-      @Override
-      protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         drawHeading(ctx, "Module Dashboard", "Select a module to configure");
-         TextRenderer tr = this.textRenderer;
-         for (Card card : this.cards) {
-            boolean hovered = card.contains(mouseX, mouseY);
-            boolean on = Boolean.TRUE.equals(card.enabled().get());
-            YjTheme.panel(ctx, card.x(), card.y(), card.w(), card.h(), hovered ? YjTheme.CARD_HOVER : YjTheme.CARD, YjTheme.BORDER_SOFT);
-            ctx.fill(card.x(), card.y(), card.x() + 2, card.y() + card.h(), on ? YjTheme.ACCENT : YjTheme.TEXT_MUTED);
-            ctx.drawText(tr, Text.literal(card.label()).formatted(Formatting.BOLD), card.x() + 10, card.y() + 9, YjTheme.TEXT, false);
-            int dotX = card.x() + card.w() - 12;
-            ctx.fill(dotX, card.y() + 11, dotX + 5, card.y() + 16, on ? YjTheme.SUCCESS : YjTheme.TEXT_MUTED);
-            ctx.drawText(tr, card.desc(), card.x() + 10, card.y() + 24, YjTheme.TEXT_MUTED, false);
-            String sum = card.summary().get();
-            ctx.drawText(tr, sum, card.x() + 10, card.y() + 37, YjTheme.TEXT_DIM, false);
-         }
-      }
-
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (super.mouseClicked(mouseX, mouseY, button)) return true;
-         if (button == 0 && this.client != null) {
-            for (Card card : this.cards) {
-               if (card.contains(mouseX, mouseY)) {
-                  this.client.setScreen(screenFor(card.id(), this));
-                  return true;
-               }
-            }
-         }
-         return false;
-      }
-   }
-
-   private static final class AutoLeftScreen extends YjScreen {
-      private final AutoLeftClient.Config cfg = copy();
-      private KeybindButton keybind;
-
-      private AutoLeftScreen(Screen parent) {
-         super(parent, "Auto Left");
-      }
-
-      private static AutoLeftClient.Config copy() {
-         AutoLeftClient.Config c = new AutoLeftClient.Config();
-         AutoLeftClient.Config s = AutoLeftClient.config;
-         if (s != null) {
-            c.configVersion = s.configVersion;
-            c.enabled = s.enabled;
-            c.weaponCheck = s.weaponCheck;
-            c.toggleKeyCode = s.toggleKeyCode;
-            c.minCps = s.minCps;
-            c.maxCps = s.maxCps;
-         }
-         return c;
-      }
-
-      @Override
-      protected String navId() {
-         return "autoleft";
-      }
-
-      @Override
-      protected String headerStatus() {
-         return this.cfg.enabled ? "Auto Left: on" : "Auto Left: off";
-      }
-
-      @Override
-      protected void applyLive() {
-         AutoLeftClient.applyRuntimeConfig(this.cfg);
-      }
-
-      @Override
-      protected void commit() {
-         AutoLeftClient.saveConfigStatic(this.cfg);
-      }
-
-      @Override
-      protected void init() {
-         this.clearHelps();
-         int x = contentX();
-         int w = contentW();
-         int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
-            this.cfg.enabled = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Turn Auto Left on or off.");
-         y += YjTheme.ROW;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Weapon Mode", this.cfg.weaponCheck, v -> {
-            this.cfg.weaponCheck = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Only click while holding a sword or axe.");
-         y += YjTheme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
-            () -> this.cfg.toggleKeyCode, code -> {
-               this.cfg.toggleKeyCode = code;
-               this.markEdited();
-               this.commit();
-               this.dirty = false;
+        @Override
+        protected void init() {
+            int x = contentX();
+            int y = contentTop();
+            int w = contentW();
+            addDrawableChild(new ToggleSwitch(x, y, w, 22, "Enabled", cfg.enabled, value -> {
+                cfg.enabled = value;
+                saveNow();
             }));
-         y += YjTheme.ROW + 4;
-         this.addSlider(x, y, w, "Min CPS", 1, 20, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Minimum clicks per second.", "Safe executable range: 1-20 CPS.");
-         y += YjTheme.ROW + 2;
-         this.addSlider(x, y, w, "Max CPS", 1, 20, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum clicks per second.", "At most one synthetic click per game tick.");
-         addActionBar(this::reset);
-      }
-
-      private void reset() {
-         AutoLeftClient.Config d = new AutoLeftClient.Config();
-         this.cfg.enabled = d.enabled;
-         this.cfg.weaponCheck = d.weaponCheck;
-         this.cfg.toggleKeyCode = d.toggleKeyCode;
-         this.cfg.minCps = d.minCps;
-         this.cfg.maxCps = d.maxCps;
-         this.applyLive();
-         this.commit();
-         this.dirty = false;
-         if (this.client != null) this.client.setScreen(new AutoLeftScreen(this.parent));
-      }
-
-      @Override
-      protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         drawHeading(ctx, "Auto Left", "Left-click speed and weapon gating.");
-         addStatusChip(ctx, contentRight() - 60, contentTop(), this.cfg.enabled);
-      }
-
-      @Override
-      public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-         if (this.keybind != null && this.keybind.captureKey(keyCode)) return true;
-         return super.keyPressed(keyCode, scanCode, modifiers);
-      }
-
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (this.keybind != null && this.keybind.isListening() && this.keybind.captureMouse(button)) return true;
-         return super.mouseClicked(mouseX, mouseY, button);
-      }
-   }
-
-   private static final class AutoRightScreen extends YjScreen {
-      private final AutoRightClient.Config cfg = copy();
-      private KeybindButton keybind;
-
-      private AutoRightScreen(Screen parent) {
-         super(parent, "Auto Right");
-      }
-
-      private static AutoRightClient.Config copy() {
-         AutoRightClient.Config c = new AutoRightClient.Config();
-         AutoRightClient.Config s = AutoRightClient.config;
-         if (s != null) {
-            c.configVersion = s.configVersion;
-            c.enabled = s.enabled;
-            c.blockMode = s.blockMode;
-            c.toggleKeyCode = s.toggleKeyCode;
-            c.minCps = s.minCps;
-            c.maxCps = s.maxCps;
-         }
-         return c;
-      }
-
-      @Override
-      protected String navId() {
-         return "autoright";
-      }
-
-      @Override
-      protected String headerStatus() {
-         return this.cfg.enabled ? "Auto Right: on" : "Auto Right: off";
-      }
-
-      @Override
-      protected void applyLive() {
-         AutoRightClient.applyRuntimeConfig(this.cfg);
-      }
-
-      @Override
-      protected void commit() {
-         AutoRightClient.saveConfigStatic(this.cfg);
-      }
-
-      @Override
-      protected void init() {
-         this.clearHelps();
-         int x = contentX();
-         int w = contentW();
-         int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
-            this.cfg.enabled = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Turn Auto Right on or off.");
-         y += YjTheme.ROW;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Block Mode", this.cfg.blockMode, v -> {
-            this.cfg.blockMode = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Fast placement only while holding a block.",
-            "Fire Charge / pearls always fire one use per press.");
-         y += YjTheme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
-            () -> this.cfg.toggleKeyCode, code -> {
-               this.cfg.toggleKeyCode = code;
-               this.markEdited();
-               this.commit();
-               this.dirty = false;
+            keybind = addDrawableChild(new KeybindButton(x, y + 34, w, 22,
+                    () -> cfg.toggleKeyCode, code -> {
+                cfg.toggleKeyCode = code;
+                saveNow();
             }));
-         y += YjTheme.ROW + 4;
-         this.addSlider(x, y, w, "Min CPS", 1, 20, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Minimum blocks placed per second.", "Safe executable range: 1-20 CPS.");
-         y += YjTheme.ROW + 2;
-         this.addSlider(x, y, w, "Max CPS", 1, 20, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum blocks placed per second.", "One vanilla use attempt per game tick maximum.");
-         addActionBar(this::reset);
-      }
+            addSlider(x, y + 72, w, "CPS", 1, 40, cfg.cps, true,
+                    value -> cfg.cps = (int) Math.round(value));
+            addFooter(this::reset);
+        }
 
-      private void reset() {
-         AutoRightClient.Config d = new AutoRightClient.Config();
-         this.cfg.enabled = d.enabled;
-         this.cfg.blockMode = d.blockMode;
-         this.cfg.toggleKeyCode = d.toggleKeyCode;
-         this.cfg.minCps = d.minCps;
-         this.cfg.maxCps = d.maxCps;
-         this.applyLive();
-         this.commit();
-         this.dirty = false;
-         if (this.client != null) this.client.setScreen(new AutoRightScreen(this.parent));
-      }
+        private void reset() {
+            AutoLeftClient.Config defaults = new AutoLeftClient.Config();
+            cfg.enabled = defaults.enabled;
+            cfg.toggleKeyCode = defaults.toggleKeyCode;
+            cfg.cps = defaults.cps;
+            saveNow();
+            if (client != null) client.setScreen(new AutoLeftScreen(parent));
+        }
 
-      @Override
-      protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         drawHeading(ctx, "Auto Right", "Right-click speed and block placement.");
-         addStatusChip(ctx, contentRight() - 60, contentTop(), this.cfg.enabled);
-      }
+        @Override
+        protected void renderLabels(DrawContext ctx) {
+            ctx.drawText(textRenderer, "One fixed rate, direct Minecraft attacks, independent 1–40 CPS.",
+                    contentX(), panelY() + 34, YjTheme.TEXT_MUTED, false);
+        }
 
-      @Override
-      public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-         if (this.keybind != null && this.keybind.captureKey(keyCode)) return true;
-         return super.keyPressed(keyCode, scanCode, modifiers);
-      }
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (keybind != null && keybind.captureKey(keyCode)) return true;
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
 
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (this.keybind != null && this.keybind.isListening() && this.keybind.captureMouse(button)) return true;
-         return super.mouseClicked(mouseX, mouseY, button);
-      }
-   }
+        @Override
+        public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            if (keybind != null && keybind.isListening() && keybind.captureMouse(button)) return true;
+            return super.mouseClicked(mouseX, mouseY, button);
+        }
+    }
 
-   private static final class NinjaBridgeScreen extends YjScreen {
-      private final NinjaBridgeClient.Config cfg = copy();
-      private KeybindButton keybind;
+    private static final class AutoRightScreen extends SimpleScreen {
+        private final AutoRightClient.Config cfg = copy();
+        private KeybindButton keybind;
 
-      private NinjaBridgeScreen(Screen parent) {
-         super(parent, "Ninja Bridge");
-      }
+        private AutoRightScreen(Screen parent) {
+            super(parent, "Auto Right");
+        }
 
-      private static NinjaBridgeClient.Config copy() {
-         NinjaBridgeClient.Config c = new NinjaBridgeClient.Config();
-         NinjaBridgeClient.Config s = NinjaBridgeClient.config;
-         if (s != null) {
-            c.configVersion = s.configVersion;
-            c.enabled = s.enabled;
-            c.toggleKeyCode = s.toggleKeyCode;
-            c.autoSwitch = s.autoSwitch;
-         }
-         return c;
-      }
-
-      @Override
-      protected String navId() {
-         return "ninjabridge";
-      }
-
-      @Override
-      protected String headerStatus() {
-         return this.cfg.enabled ? "Ninja Bridge: on" : "Ninja Bridge: off";
-      }
-
-      @Override
-      protected void applyLive() {
-         NinjaBridgeClient.applyRuntimeConfig(this.cfg);
-      }
-
-      @Override
-      protected void commit() {
-         NinjaBridgeClient.saveConfigStatic(this.cfg);
-      }
-
-      @Override
-      protected void init() {
-         this.clearHelps();
-         int x = contentX();
-         int w = contentW();
-         int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
-            this.cfg.enabled = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Turn Ninja Bridge on or off.");
-         y += YjTheme.ROW;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Auto Switch", this.cfg.autoSwitch, v -> {
-            this.cfg.autoSwitch = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Automatically hold a placeable block while bridging.");
-         y += YjTheme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
-            () -> this.cfg.toggleKeyCode, code -> {
-               this.cfg.toggleKeyCode = code;
-               this.markEdited();
-               this.commit();
-               this.dirty = false;
-            }));
-         addActionBar(this::reset);
-      }
-
-      private void reset() {
-         NinjaBridgeClient.Config d = new NinjaBridgeClient.Config();
-         this.cfg.enabled = d.enabled;
-         this.cfg.toggleKeyCode = d.toggleKeyCode;
-         this.cfg.autoSwitch = d.autoSwitch;
-         this.applyLive();
-         this.commit();
-         this.dirty = false;
-         if (this.client != null) this.client.setScreen(new NinjaBridgeScreen(this.parent));
-      }
-
-      @Override
-      protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         drawHeading(ctx, "Ninja Bridge", "Tap the key to toggle auto-sneak bridging.");
-         addStatusChip(ctx, contentRight() - 60, contentTop(), this.cfg.enabled);
-      }
-
-      @Override
-      public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-         if (this.keybind != null && this.keybind.captureKey(keyCode)) return true;
-         return super.keyPressed(keyCode, scanCode, modifiers);
-      }
-
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (this.keybind != null && this.keybind.isListening() && this.keybind.captureMouse(button)) return true;
-         return super.mouseClicked(mouseX, mouseY, button);
-      }
-   }
-
-   private static final class AimAssistScreen extends YjScreen {
-      private final AimAssistClient.Config cfg = copy();
-      private KeybindButton keybind;
-
-      private AimAssistScreen(Screen parent) {
-         super(parent, "AimAssist");
-      }
-
-      private static AimAssistClient.Config copy() {
-         AimAssistClient.Config c = new AimAssistClient.Config();
-         AimAssistClient.Config s = AimAssistClient.config;
-         if (s != null) {
-            c.configVersion = s.configVersion;
-            c.enabled = s.enabled;
-            c.toggleKeyCode = s.toggleKeyCode;
-            c.speed = s.speed;
-            c.smoothness = s.smoothness;
-            c.fov = s.fov;
-         }
-         return c;
-      }
-
-      @Override
-      protected String navId() {
-         return "aimassist";
-      }
-
-      @Override
-      protected String headerStatus() {
-         return this.cfg.enabled ? "AimAssist: on" : "AimAssist: off";
-      }
-
-      @Override
-      protected void applyLive() {
-         AimAssistClient.applyRuntimeConfig(this.cfg);
-      }
-
-      @Override
-      protected void commit() {
-         AimAssistClient.saveConfigStatic(this.cfg);
-      }
-
-      @Override
-      protected void init() {
-         this.clearHelps();
-         int x = contentX();
-         int w = contentW();
-         int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
-            this.cfg.enabled = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Turn AimAssist on or off.");
-         y += YjTheme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
-            () -> this.cfg.toggleKeyCode, code -> {
-               this.cfg.toggleKeyCode = code;
-               this.markEdited();
-               this.commit();
-               this.dirty = false;
-            }));
-         y += YjTheme.ROW + 4;
-         this.addSlider(x, y, w, "Speed", 0.01, 1.0, this.cfg.speed, false, v -> this.cfg.speed = (float) v);
-         addHelp(x, y, w, YjTheme.CTRL_H, "Base turn strength toward the target.");
-         y += YjTheme.ROW + 2;
-         this.addSlider(x, y, w, "Smoothness", 0.0, 1.0, this.cfg.smoothness, false, v -> this.cfg.smoothness = (float) v);
-         addHelp(x, y, w, YjTheme.CTRL_H, "Higher = softer, slower aim.");
-         y += YjTheme.ROW + 2;
-         this.addSlider(x, y, w, "FOV", 10, 180, this.cfg.fov, false, v -> this.cfg.fov = (float) v);
-         addHelp(x, y, w, YjTheme.CTRL_H, "Cone (degrees) in which targets are acquired.");
-         addActionBar(this::reset);
-      }
-
-      private void reset() {
-         AimAssistClient.Config d = new AimAssistClient.Config();
-         this.cfg.enabled = d.enabled;
-         this.cfg.toggleKeyCode = d.toggleKeyCode;
-         this.cfg.speed = d.speed;
-         this.cfg.smoothness = d.smoothness;
-         this.cfg.fov = d.fov;
-         this.applyLive();
-         this.commit();
-         this.dirty = false;
-         if (this.client != null) this.client.setScreen(new AimAssistScreen(this.parent));
-      }
-
-      @Override
-      protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         drawHeading(ctx, "AimAssist", "Close-range aim smoothing.");
-         addStatusChip(ctx, contentRight() - 60, contentTop(), this.cfg.enabled);
-      }
-
-      @Override
-      public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-         if (this.keybind != null && this.keybind.captureKey(keyCode)) return true;
-         return super.keyPressed(keyCode, scanCode, modifiers);
-      }
-
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (this.keybind != null && this.keybind.isListening() && this.keybind.captureMouse(button)) return true;
-         return super.mouseClicked(mouseX, mouseY, button);
-      }
-   }
-
-   private static final class TrackerScreen extends YjScreen {
-      private final TrackerClient.Config cfg = copy();
-      private KeybindButton keybind;
-
-      private TrackerScreen(Screen parent) {
-         super(parent, "Tracker");
-      }
-
-      private static TrackerClient.Config copy() {
-         TrackerClient.Config c = new TrackerClient.Config();
-         TrackerClient.Config s = TrackerClient.config;
-         if (s != null) {
-            c.configVersion = s.configVersion;
-            c.enabled = s.enabled;
-            c.toggleKeyCode = s.toggleKeyCode;
-            c.ignoreOwnTeam = s.ignoreOwnTeam;
-            c.range = s.range;
-            c.hudOffsetX = s.hudOffsetX;
-            c.hudY = s.hudY;
-         }
-         return c;
-      }
-
-      @Override
-      protected String navId() {
-         return "tracker";
-      }
-
-      @Override
-      protected String headerStatus() {
-         return this.cfg.enabled ? "Tracker: on" : "Tracker: off";
-      }
-
-      @Override
-      protected void applyLive() {
-         TrackerClient.applyRuntimeConfig(this.cfg);
-      }
-
-      @Override
-      protected void commit() {
-         TrackerClient.saveConfigStatic(this.cfg);
-      }
-
-      @Override
-      protected void init() {
-         this.clearHelps();
-         int x = contentX();
-         int w = contentW();
-         int y = contentTop() + 26;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Enabled", this.cfg.enabled, v -> {
-            this.cfg.enabled = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Turn the tracker overlay and box on or off.");
-         y += YjTheme.ROW;
-         this.addDrawableChild(new ToggleSwitch(x, y, w, YjTheme.CTRL_H, "Ignore Team", this.cfg.ignoreOwnTeam, v -> {
-            this.cfg.ignoreOwnTeam = v;
-            this.markEdited();
-         }));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Skip players on your own scoreboard team.");
-         y += YjTheme.ROW;
-         this.keybind = this.addDrawableChild(new KeybindButton(x, y, w, YjTheme.CTRL_H,
-            () -> this.cfg.toggleKeyCode, code -> {
-               this.cfg.toggleKeyCode = code;
-               this.markEdited();
-               this.commit();
-               this.dirty = false;
-            }));
-         y += YjTheme.ROW + 4;
-         this.addSlider(x, y, w, "Range", 1, 128, this.cfg.range, false, v -> this.cfg.range = v);
-         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum distance (blocks) for alerts and the box.");
-         y += YjTheme.ROW + 6;
-         this.addDrawableChild(ButtonWidget.builder(Text.literal("Edit HUD Position"), b -> {
-            if (this.dirty) {
-               this.commit();
-               this.dirty = false;
+        private static AutoRightClient.Config copy() {
+            AutoRightClient.Config result = new AutoRightClient.Config();
+            AutoRightClient.Config source = AutoRightClient.config;
+            if (source != null) {
+                result.configVersion = source.configVersion;
+                result.enabled = source.enabled;
+                result.toggleKeyCode = source.toggleKeyCode;
+                result.cps = source.cps;
             }
-            if (this.client != null) this.client.setScreen(new TrackerHudEditorScreen(this, this.cfg));
-         }).dimensions(x, y, w, YjTheme.CTRL_H).build());
-         addActionBar(this::reset);
-      }
+            return result;
+        }
 
-      private void reset() {
-         TrackerClient.Config d = new TrackerClient.Config();
-         this.cfg.enabled = d.enabled;
-         this.cfg.toggleKeyCode = d.toggleKeyCode;
-         this.cfg.ignoreOwnTeam = d.ignoreOwnTeam;
-         this.cfg.range = d.range;
-         this.cfg.hudOffsetX = d.hudOffsetX;
-         this.cfg.hudY = d.hudY;
-         this.applyLive();
-         this.commit();
-         this.dirty = false;
-         if (this.client != null) this.client.setScreen(new TrackerScreen(this.parent));
-      }
+        @Override protected void applyLive() { AutoRightClient.applyRuntimeConfig(cfg); }
+        @Override protected void commit() { AutoRightClient.saveConfigStatic(cfg); }
 
-      @Override
-      protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         drawHeading(ctx, "Tracker", "Range, team filter and HUD placement.");
-         addStatusChip(ctx, contentRight() - 60, contentTop(), this.cfg.enabled);
-      }
+        @Override
+        protected void init() {
+            int x = contentX();
+            int y = contentTop();
+            int w = contentW();
+            addDrawableChild(new ToggleSwitch(x, y, w, 22, "Enabled", cfg.enabled, value -> {
+                cfg.enabled = value;
+                saveNow();
+            }));
+            keybind = addDrawableChild(new KeybindButton(x, y + 34, w, 22,
+                    () -> cfg.toggleKeyCode, code -> {
+                cfg.toggleKeyCode = code;
+                saveNow();
+            }));
+            addSlider(x, y + 72, w, "CPS", 1, 40, cfg.cps, true,
+                    value -> cfg.cps = (int) Math.round(value));
+            addFooter(this::reset);
+        }
 
-      @Override
-      public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-         if (this.keybind != null && this.keybind.captureKey(keyCode)) return true;
-         return super.keyPressed(keyCode, scanCode, modifiers);
-      }
+        private void reset() {
+            AutoRightClient.Config defaults = new AutoRightClient.Config();
+            cfg.enabled = defaults.enabled;
+            cfg.toggleKeyCode = defaults.toggleKeyCode;
+            cfg.cps = defaults.cps;
+            saveNow();
+            if (client != null) client.setScreen(new AutoRightScreen(parent));
+        }
 
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (this.keybind != null && this.keybind.isListening() && this.keybind.captureMouse(button)) return true;
-         return super.mouseClicked(mouseX, mouseY, button);
-      }
-   }
+        @Override
+        protected void renderLabels(DrawContext ctx) {
+            ctx.drawText(textRenderer, "Blocks use one fixed direct rate; hold/charge items stay vanilla.",
+                    contentX(), panelY() + 34, YjTheme.TEXT_MUTED, false);
+        }
 
-   private static final class TrackerHudEditorScreen extends YjScreen {
-      private final TrackerClient.Config cfg;
-      private boolean dragging;
-      private int grabX;
-      private int grabY;
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (keybind != null && keybind.captureKey(keyCode)) return true;
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
 
-      private TrackerHudEditorScreen(Screen parent, TrackerClient.Config cfg) {
-         super(parent, "Tracker HUD");
-         this.cfg = cfg;
-      }
+        @Override
+        public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            if (keybind != null && keybind.isListening() && keybind.captureMouse(button)) return true;
+            return super.mouseClicked(mouseX, mouseY, button);
+        }
+    }
 
-      @Override
-      protected String navId() {
-         return "tracker";
-      }
+    private static final class NinjaBridgeScreen extends SimpleScreen {
+        private final NinjaBridgeClient.Config cfg = copy();
+        private KeybindButton keybind;
 
-      @Override
-      protected void applyLive() {
-         TrackerClient.applyRuntimeConfig(this.cfg);
-      }
+        private NinjaBridgeScreen(Screen parent) {
+            super(parent, "Ninja Bridge");
+        }
 
-      @Override
-      protected void commit() {
-         TrackerClient.saveConfigStatic(this.cfg);
-      }
-
-      @Override
-      protected void init() {
-         this.addDrawableChild(ButtonWidget.builder(Text.literal("Done"), b -> this.close())
-            .dimensions(winX() + winW() - YjTheme.PAD - 66, footerY() + (footerH() - YjTheme.CTRL_H) / 2, 66, YjTheme.CTRL_H).build());
-         this.addDrawableChild(ButtonWidget.builder(Text.literal("Reset"), b -> {
-            TrackerClient.Config d = new TrackerClient.Config();
-            this.cfg.hudOffsetX = d.hudOffsetX;
-            this.cfg.hudY = d.hudY;
-            this.markEdited();
-            this.commit();
-            this.dirty = false;
-         }).dimensions(winX() + winW() - YjTheme.PAD - 66 - 8 - 56, footerY() + (footerH() - YjTheme.CTRL_H) / 2, 56, YjTheme.CTRL_H).build());
-      }
-
-      private int previewX() {
-         return Math.max(4, this.cfg.hudOffsetX);
-      }
-
-      private int previewY() {
-         return Math.max(4, this.cfg.hudY);
-      }
-
-      @Override
-      protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
-         drawHeading(ctx, "HUD Editor", "Drag the preview to reposition, then Done.");
-         TextRenderer tr = this.textRenderer;
-         Text preview = Text.literal("Alert Enemy 6.4m RIGHT");
-         int pw = tr.getWidth(preview);
-         int px = previewX();
-         int py = previewY();
-         ctx.fill(px - 4, py - 2, px + pw + 4, py + 10, 0xB0000000);
-         YjTheme.panel(ctx, px - 5, py - 3, pw + 10, 15, 0x00000000, YjTheme.ACCENT);
-         ctx.drawText(tr, preview, px, py, YjTheme.TEXT, false);
-      }
-
-      @Override
-      public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (button == 0) {
-            TextRenderer tr = this.textRenderer;
-            int pw = tr.getWidth("Alert Enemy 6.4m RIGHT");
-            int px = previewX();
-            int py = previewY();
-            if (mouseX >= px - 6 && mouseX <= px + pw + 6 && mouseY >= py - 4 && mouseY <= py + 12) {
-               this.dragging = true;
-               this.grabX = (int) mouseX - px;
-               this.grabY = (int) mouseY - py;
-               return true;
+        private static NinjaBridgeClient.Config copy() {
+            NinjaBridgeClient.Config result = new NinjaBridgeClient.Config();
+            NinjaBridgeClient.Config source = NinjaBridgeClient.config;
+            if (source != null) {
+                result.configVersion = source.configVersion;
+                result.enabled = source.enabled;
+                result.toggleKeyCode = source.toggleKeyCode;
+                result.autoSwitch = source.autoSwitch;
             }
-         }
-         return super.mouseClicked(mouseX, mouseY, button);
-      }
+            return result;
+        }
 
-      @Override
-      public boolean mouseDragged(double mouseX, double mouseY, int button, double dx, double dy) {
-         if (this.dragging && button == 0) {
-            this.cfg.hudOffsetX = MathHelper.clamp((int) mouseX - this.grabX, 4, 10000);
-            this.cfg.hudY = MathHelper.clamp((int) mouseY - this.grabY, 4, 10000);
-            this.markEdited();
-            return true;
-         }
-         return super.mouseDragged(mouseX, mouseY, button, dx, dy);
-      }
+        @Override protected void applyLive() { NinjaBridgeClient.applyRuntimeConfig(cfg); }
+        @Override protected void commit() { NinjaBridgeClient.saveConfigStatic(cfg); }
 
-      @Override
-      public boolean mouseReleased(double mouseX, double mouseY, int button) {
-         if (this.dragging && button == 0) {
-            this.dragging = false;
-            this.commit();
-            this.dirty = false;
-            return true;
-         }
-         return super.mouseReleased(mouseX, mouseY, button);
-      }
-   }
+        @Override
+        protected void init() {
+            int x = contentX();
+            int y = contentTop();
+            int w = contentW();
+            addDrawableChild(new ToggleSwitch(x, y, w, 22, "Enabled", cfg.enabled, value -> {
+                cfg.enabled = value;
+                saveNow();
+            }));
+            addDrawableChild(new ToggleSwitch(x, y + 34, w, 22, "Auto Switch", cfg.autoSwitch, value -> {
+                cfg.autoSwitch = value;
+                saveNow();
+            }));
+            keybind = addDrawableChild(new KeybindButton(x, y + 68, w, 22,
+                    () -> cfg.toggleKeyCode, code -> {
+                cfg.toggleKeyCode = code;
+                saveNow();
+            }));
+            addFooter(this::reset);
+        }
+
+        private void reset() {
+            NinjaBridgeClient.Config defaults = new NinjaBridgeClient.Config();
+            cfg.enabled = defaults.enabled;
+            cfg.toggleKeyCode = defaults.toggleKeyCode;
+            cfg.autoSwitch = defaults.autoSwitch;
+            saveNow();
+            if (client != null) client.setScreen(new NinjaBridgeScreen(parent));
+        }
+
+        @Override
+        protected void renderLabels(DrawContext ctx) {
+            ctx.drawText(textRenderer, "Automatic edge sneak with optional block switching.",
+                    contentX(), panelY() + 34, YjTheme.TEXT_MUTED, false);
+        }
+
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (keybind != null && keybind.captureKey(keyCode)) return true;
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
+        @Override
+        public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            if (keybind != null && keybind.isListening() && keybind.captureMouse(button)) return true;
+            return super.mouseClicked(mouseX, mouseY, button);
+        }
+    }
+
+    private static final class AimAssistScreen extends SimpleScreen {
+        private final AimAssistClient.Config cfg = copy();
+        private KeybindButton keybind;
+
+        private AimAssistScreen(Screen parent) {
+            super(parent, "AimAssist");
+        }
+
+        private static AimAssistClient.Config copy() {
+            AimAssistClient.Config result = new AimAssistClient.Config();
+            AimAssistClient.Config source = AimAssistClient.config;
+            if (source != null) {
+                result.configVersion = source.configVersion;
+                result.enabled = source.enabled;
+                result.toggleKeyCode = source.toggleKeyCode;
+                result.speed = source.speed;
+                result.smoothness = source.smoothness;
+                result.fov = source.fov;
+            }
+            return result;
+        }
+
+        @Override protected void applyLive() { AimAssistClient.applyRuntimeConfig(cfg); }
+        @Override protected void commit() { AimAssistClient.saveConfigStatic(cfg); }
+
+        @Override
+        protected void init() {
+            int x = contentX();
+            int y = contentTop();
+            int w = contentW();
+            addDrawableChild(new ToggleSwitch(x, y, w, 22, "Enabled", cfg.enabled, value -> {
+                cfg.enabled = value;
+                saveNow();
+            }));
+            keybind = addDrawableChild(new KeybindButton(x, y + 32, w, 22,
+                    () -> cfg.toggleKeyCode, code -> {
+                cfg.toggleKeyCode = code;
+                saveNow();
+            }));
+            addSlider(x, y + 66, w, "Speed", 0.01, 1.0, cfg.speed, false,
+                    value -> cfg.speed = (float) value);
+            addSlider(x, y + 98, w, "Smoothness", 0.0, 1.0, cfg.smoothness, false,
+                    value -> cfg.smoothness = (float) value);
+            addSlider(x, y + 130, w, "FOV", 10, 180, cfg.fov, false,
+                    value -> cfg.fov = (float) value);
+            addFooter(this::reset);
+        }
+
+        private void reset() {
+            AimAssistClient.Config defaults = new AimAssistClient.Config();
+            cfg.enabled = defaults.enabled;
+            cfg.toggleKeyCode = defaults.toggleKeyCode;
+            cfg.speed = defaults.speed;
+            cfg.smoothness = defaults.smoothness;
+            cfg.fov = defaults.fov;
+            saveNow();
+            if (client != null) client.setScreen(new AimAssistScreen(parent));
+        }
+
+        @Override
+        protected void renderLabels(DrawContext ctx) {
+            ctx.drawText(textRenderer, "Breaking a bed locks aim to the bed until release or a real player hit.",
+                    contentX(), panelY() + 34, YjTheme.TEXT_MUTED, false);
+        }
+
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (keybind != null && keybind.captureKey(keyCode)) return true;
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
+        @Override
+        public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            if (keybind != null && keybind.isListening() && keybind.captureMouse(button)) return true;
+            return super.mouseClicked(mouseX, mouseY, button);
+        }
+    }
+
+    private static final class TrackerScreen extends SimpleScreen {
+        private final TrackerClient.Config cfg = copy();
+        private KeybindButton keybind;
+
+        private TrackerScreen(Screen parent) {
+            super(parent, "Tracker");
+        }
+
+        private static TrackerClient.Config copy() {
+            TrackerClient.Config result = new TrackerClient.Config();
+            TrackerClient.Config source = TrackerClient.config;
+            if (source != null) {
+                result.configVersion = source.configVersion;
+                result.enabled = source.enabled;
+                result.toggleKeyCode = source.toggleKeyCode;
+                result.ignoreOwnTeam = source.ignoreOwnTeam;
+                result.range = source.range;
+                result.hudOffsetX = source.hudOffsetX;
+                result.hudY = source.hudY;
+            }
+            return result;
+        }
+
+        @Override protected void applyLive() { TrackerClient.applyRuntimeConfig(cfg); }
+        @Override protected void commit() { TrackerClient.saveConfigStatic(cfg); }
+
+        @Override
+        protected void init() {
+            int x = contentX();
+            int y = contentTop();
+            int w = contentW();
+            addDrawableChild(new ToggleSwitch(x, y, w, 22, "Enabled", cfg.enabled, value -> {
+                cfg.enabled = value;
+                saveNow();
+            }));
+            addDrawableChild(new ToggleSwitch(x, y + 30, w, 22, "Ignore Team", cfg.ignoreOwnTeam, value -> {
+                cfg.ignoreOwnTeam = value;
+                saveNow();
+            }));
+            keybind = addDrawableChild(new KeybindButton(x, y + 60, w, 22,
+                    () -> cfg.toggleKeyCode, code -> {
+                cfg.toggleKeyCode = code;
+                saveNow();
+            }));
+            addSlider(x, y + 92, w, "Range", 1, 128, cfg.range, false,
+                    value -> cfg.range = value);
+            addSlider(x, y + 124, w, "HUD X", 4, 1000, cfg.hudOffsetX, true,
+                    value -> cfg.hudOffsetX = (int) Math.round(value));
+            addSlider(x, y + 156, w, "HUD Y", 4, 1000, cfg.hudY, true,
+                    value -> cfg.hudY = (int) Math.round(value));
+            addFooter(this::reset);
+        }
+
+        private void reset() {
+            TrackerClient.Config defaults = new TrackerClient.Config();
+            cfg.enabled = defaults.enabled;
+            cfg.toggleKeyCode = defaults.toggleKeyCode;
+            cfg.ignoreOwnTeam = defaults.ignoreOwnTeam;
+            cfg.range = defaults.range;
+            cfg.hudOffsetX = defaults.hudOffsetX;
+            cfg.hudY = defaults.hudY;
+            saveNow();
+            if (client != null) client.setScreen(new TrackerScreen(parent));
+        }
+
+        @Override
+        protected void renderLabels(DrawContext ctx) {
+            ctx.drawText(textRenderer, "Range and HUD position are saved automatically.",
+                    contentX(), panelY() + 34, YjTheme.TEXT_MUTED, false);
+        }
+
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (keybind != null && keybind.captureKey(keyCode)) return true;
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
+        @Override
+        public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            if (keybind != null && keybind.isListening() && keybind.captureMouse(button)) return true;
+            return super.mouseClicked(mouseX, mouseY, button);
+        }
+    }
 }
