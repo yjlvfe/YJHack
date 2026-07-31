@@ -7,11 +7,11 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 
-/** Central, mapping-stable right-click classification. */
+/** Central right-click classification with conservative compatibility for modded items. */
 public final class RightClickPolicy {
 
     public enum Kind {
-        /** Instant/discrete items that must use once per physical press. */
+        /** Instant vanilla items that must use once per physical press. */
         SINGLE_PRESS,
         /** Placeable blocks eligible for configured Block Mode cadence. */
         BLOCK,
@@ -19,7 +19,7 @@ public final class RightClickPolicy {
         PASS_THROUGH
     }
 
-    private static final Set<String> SINGLE_PRESS_IDS = Set.of(
+    private static final Set<String> VANILLA_SINGLE_PRESS_IDS = Set.of(
             "fire_charge",
             "ender_pearl",
             "snowball",
@@ -45,15 +45,20 @@ public final class RightClickPolicy {
     public static boolean isSinglePressItem(ItemStack stack, LivingEntity user) {
         if (stack == null || stack.isEmpty()) return false;
         Identifier id = Registries.ITEM.getId(stack.getItem());
-        return id != null && isSinglePressPath(id.getPath());
+        return id != null && isSinglePressId(id.getNamespace(), id.getPath());
     }
 
     /**
-     * Bows, crossbows, tridents, shields, spyglasses, horns, food and other hold/charge items are
-     * intentionally absent. They must remain PASS_THROUGH so AutoRight never releases them early.
+     * Only known vanilla identifiers are suppressed. A modded item that happens to use a path such
+     * as fire_charge or *_bucket is left PASS_THROUGH because its hold semantics are unknown.
      */
+    public static boolean isSinglePressId(String namespace, String path) {
+        if (!"minecraft".equals(namespace) || path == null) return false;
+        return VANILLA_SINGLE_PRESS_IDS.contains(path) || path.equals("bucket") || path.endsWith("_bucket");
+    }
+
+    /** Backward-compatible pure helper used by older tests. */
     public static boolean isSinglePressPath(String path) {
-        if (path == null) return false;
-        return SINGLE_PRESS_IDS.contains(path) || path.equals("bucket") || path.endsWith("_bucket");
+        return isSinglePressId("minecraft", path);
     }
 }
