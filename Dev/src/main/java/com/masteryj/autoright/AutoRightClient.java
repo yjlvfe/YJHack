@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.masteryj.config.RecommendedSettings;
 import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
+import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -37,17 +38,19 @@ public final class AutoRightClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoRight");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoright.json");
-    private static final int CURRENT_CONFIG_VERSION = 9;
+    private static final int CURRENT_CONFIG_VERSION = 10;
     private static final int LEGACY_CONSERVATIVE_FIXED_CPS = 10;
     private static final int BLOCK_RESTOCK_GRACE_TICKS = 4;
 
     private final LegacyMultiVersionPlacementPolicy placementPolicy =
             new LegacyMultiVersionPlacementPolicy();
+    private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
 
     public static Config config;
     public static boolean enabled;
     public static int toggleKeyCode = -1;
     public static int cps = RecommendedSettings.AUTO_RIGHT_CPS;
+    public static boolean jitterEnabled = true;
 
     private World lastWorld;
     private boolean physicalWasDown;
@@ -170,6 +173,9 @@ public final class AutoRightClient implements ClientModInitializer {
         boolean validCandidate = client.crosshairTarget instanceof BlockHitResult;
         int pulses = placementPolicy.pulsesThisTick(cps,
                 enabled, activeGameplay, physicalDown, validCandidate);
+        if (jitterEnabled && pulses > 0) {
+            pulses = clickLimiter.acquire(System.nanoTime(), cps, true) ? 1 : 0;
+        }
         for (int i = 0; i < pulses; i++) {
             if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;
         }
@@ -213,6 +219,7 @@ public final class AutoRightClient implements ClientModInitializer {
 
     private void clearRuntimeState() {
         clearPressState();
+        clickLimiter.clearTimingState();
     }
 
     private boolean isUseDown(MinecraftClient client) {
@@ -268,6 +275,7 @@ public final class AutoRightClient implements ClientModInitializer {
         public boolean enabled = false;
         public int toggleKeyCode = -1;
         public int cps = RecommendedSettings.AUTO_RIGHT_CPS;
+        public boolean jitterEnabled = true;
 
         // Read-only migration fields for v7 and older files; normalized back to null.
         public Integer minCps;
@@ -279,6 +287,7 @@ public final class AutoRightClient implements ClientModInitializer {
             cfg.enabled = false;
             cfg.toggleKeyCode = -1;
             cfg.cps = RecommendedSettings.AUTO_RIGHT_CPS;
+            cfg.jitterEnabled = true;
             cfg.minCps = null;
             cfg.maxCps = null;
             cfg.normalize();
@@ -291,6 +300,7 @@ public final class AutoRightClient implements ClientModInitializer {
             result.enabled = enabled;
             result.toggleKeyCode = toggleKeyCode;
             result.cps = cps;
+            result.jitterEnabled = jitterEnabled;
             result.minCps = minCps;
             result.maxCps = maxCps;
             result.normalize();
@@ -306,6 +316,7 @@ public final class AutoRightClient implements ClientModInitializer {
                 // v1.3.0's exact default was half the original effective placement cadence.
                 cps = RecommendedSettings.AUTO_RIGHT_CPS;
             }
+            if (previousVersion < 10) jitterEnabled = true;
             configVersion = CURRENT_CONFIG_VERSION;
             cps = FixedCpsLimiter.clampCps(cps);
             toggleKeyCode = normalizeToggleKeyCode(toggleKeyCode);
@@ -354,6 +365,7 @@ public final class AutoRightClient implements ClientModInitializer {
         enabled = cfg.enabled;
         toggleKeyCode = cfg.toggleKeyCode;
         cps = cfg.cps;
+        jitterEnabled = cfg.jitterEnabled;
     }
 
     private static int normalizeToggleKeyCode(int key) {

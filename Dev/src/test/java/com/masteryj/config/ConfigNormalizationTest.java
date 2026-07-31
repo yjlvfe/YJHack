@@ -18,13 +18,13 @@ class ConfigNormalizationTest {
         AutoLeftClient.Config left = new AutoLeftClient.Config();
         left.cps = 999;
         left.normalize();
-        assertEquals(8, left.configVersion);
+        assertEquals(9, left.configVersion);
         assertEquals(40, left.cps);
 
         AutoRightClient.Config right = new AutoRightClient.Config();
         right.cps = -5;
         right.normalize();
-        assertEquals(9, right.configVersion);
+        assertEquals(10, right.configVersion);
         assertEquals(1, right.cps);
     }
 
@@ -55,7 +55,7 @@ class ConfigNormalizationTest {
         oldDefault.configVersion = 8;
         oldDefault.cps = 10;
         oldDefault.normalize();
-        assertEquals(9, oldDefault.configVersion);
+        assertEquals(10, oldDefault.configVersion);
         assertEquals(20, oldDefault.cps);
 
         AutoRightClient.Config custom = new AutoRightClient.Config();

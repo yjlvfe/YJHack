@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.masteryj.config.RecommendedSettings;
 import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
+import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
 import com.masteryj.mixin.MinecraftClientInvoker;
 import net.fabricmc.api.ClientModInitializer;
@@ -33,14 +34,16 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoLeft");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
-    private static final int CURRENT_CONFIG_VERSION = 8;
+    private static final int CURRENT_CONFIG_VERSION = 9;
 
     private final LegacyMultiVersionCombatPolicy combatPolicy = new LegacyMultiVersionCombatPolicy();
+    private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
 
     public static Config config;
     public static boolean enabled;
     public static int toggleKeyCode = -1;
     public static int cps = RecommendedSettings.AUTO_LEFT_CPS;
+    public static boolean jitterEnabled = true;
 
     private World lastWorld;
     private boolean physicalWasDown;
@@ -122,7 +125,8 @@ public final class AutoLeftClient implements ClientModInitializer {
         // invokes Minecraft's own doAttack(). The physical state is read separately from GLFW.
         restoreVanillaAttack(client, false);
         if (combatPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
-                enabled, activeGameplay, physicalDown, entityTargeted)) {
+                enabled, activeGameplay, physicalDown, entityTargeted)
+                && clickLimiter.acquire(System.nanoTime(), cps, jitterEnabled)) {
             ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
         }
     }
@@ -136,6 +140,7 @@ public final class AutoLeftClient implements ClientModInitializer {
 
     private void clearRuntimeState() {
         combatPolicy.clearRuntimeState();
+        clickLimiter.clearTimingState();
     }
 
     private void restoreVanillaAttack(MinecraftClient client, boolean pressed) {
@@ -195,6 +200,7 @@ public final class AutoLeftClient implements ClientModInitializer {
         public boolean enabled = false;
         public int toggleKeyCode = -1;
         public int cps = RecommendedSettings.AUTO_LEFT_CPS;
+        public boolean jitterEnabled = true;
 
         // Read-only migration fields for v7 and older files; normalized back to null.
         public Integer minCps;
@@ -206,6 +212,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             cfg.enabled = false;
             cfg.toggleKeyCode = -1;
             cfg.cps = RecommendedSettings.AUTO_LEFT_CPS;
+            cfg.jitterEnabled = true;
             cfg.minCps = null;
             cfg.maxCps = null;
             cfg.normalize();
@@ -218,6 +225,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             result.enabled = enabled;
             result.toggleKeyCode = toggleKeyCode;
             result.cps = cps;
+            result.jitterEnabled = jitterEnabled;
             result.minCps = minCps;
             result.maxCps = maxCps;
             result.normalize();
@@ -228,6 +236,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             if (configVersion < CURRENT_CONFIG_VERSION) {
                 if (maxCps != null) cps = maxCps;
                 else if (minCps != null) cps = minCps;
+                if (configVersion < 9) jitterEnabled = true;
             }
             configVersion = CURRENT_CONFIG_VERSION;
             cps = FixedCpsLimiter.clampCps(cps);
@@ -277,6 +286,7 @@ public final class AutoLeftClient implements ClientModInitializer {
         enabled = cfg.enabled;
         toggleKeyCode = cfg.toggleKeyCode;
         cps = cfg.cps;
+        jitterEnabled = cfg.jitterEnabled;
     }
 
     private static int normalizeToggleKeyCode(int key) {

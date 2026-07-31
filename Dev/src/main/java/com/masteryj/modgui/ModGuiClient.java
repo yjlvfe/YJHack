@@ -512,9 +512,6 @@ public final class ModGuiClient implements ClientModInitializer {
 
         private AutoLeftScreen(Screen parent) {
             super(parent, "Auto Left");
-            cfg = AutoLeftClient.config == null
-                    ? RecommendedProfiles.autoLeft()
-                    : AutoLeftClient.config.copy();
         }
 
         @Override protected String navId() { return "autoleft"; }
@@ -539,6 +536,10 @@ public final class ModGuiClient implements ClientModInitializer {
             }));
             addSlider(x, y + 66, w, "CPS", 1, 40, cfg.cps, true,
                     value -> cfg.cps = (int) Math.round(value));
+            addDrawableChild(new ToggleSwitch(x, y + 96, w, 22, "Jitter (Anti-Cheat)", cfg.jitterEnabled, value -> {
+                cfg.jitterEnabled = value;
+                saveNow();
+            }));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.autoLeft()));
             addHelp(x, y + 66, w, 22,
                     "Attempt rate: 1–40 CPS.",
@@ -597,6 +598,10 @@ public final class ModGuiClient implements ClientModInitializer {
             }));
             addSlider(x, y + 66, w, "CPS", 1, 40, cfg.cps, true,
                     value -> cfg.cps = (int) Math.round(value));
+            addDrawableChild(new ToggleSwitch(x, y + 96, w, 22, "Jitter (Anti-Cheat)", cfg.jitterEnabled, value -> {
+                cfg.jitterEnabled = value;
+                saveNow();
+            }));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.autoRight()));
             addHelp(x, y + 66, w, 22,
                     "Recommended: 10 CPS for conservative block attempts.",
