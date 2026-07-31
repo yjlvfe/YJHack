@@ -24,7 +24,7 @@ class ConfigNormalizationTest {
         AutoRightClient.Config right = new AutoRightClient.Config();
         right.cps = -5;
         right.normalize();
-        assertEquals(8, right.configVersion);
+        assertEquals(9, right.configVersion);
         assertEquals(1, right.cps);
     }
 
@@ -47,6 +47,22 @@ class ConfigNormalizationTest {
         assertEquals(40, right.cps);
         assertNull(right.minCps);
         assertNull(right.maxCps);
+    }
+
+    @Test
+    void exactVersionEightDefaultMigratesToResponsiveFixedTwenty() {
+        AutoRightClient.Config oldDefault = new AutoRightClient.Config();
+        oldDefault.configVersion = 8;
+        oldDefault.cps = 10;
+        oldDefault.normalize();
+        assertEquals(9, oldDefault.configVersion);
+        assertEquals(20, oldDefault.cps);
+
+        AutoRightClient.Config custom = new AutoRightClient.Config();
+        custom.configVersion = 8;
+        custom.cps = 16;
+        custom.normalize();
+        assertEquals(16, custom.cps);
     }
 
     @Test
