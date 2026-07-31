@@ -1,5 +1,6 @@
 package com.masteryj.autoright;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,18 +9,51 @@ import org.junit.jupiter.api.Test;
 class LegacyMultiVersionPlacementPolicyTest {
 
     @Test
-    void invalidPlacementNeverArmsOrEmits() {
+    void fixedTwentyEmitsOnePulseEveryTick() {
         LegacyMultiVersionPlacementPolicy policy = new LegacyMultiVersionPlacementPolicy();
-        assertFalse(policy.shouldEmitFollowUp(0L, 40, true, true, true, false));
-        assertFalse(policy.shouldEmitFollowUp(2_000_000_000L, 40, true, true, true, false));
+        assertEquals(1, policy.pulsesThisTick(20, true, true, true, true));
+        assertEquals(1, policy.pulsesThisTick(20, true, true, true, true));
+        assertEquals(1, policy.pulsesThisTick(20, true, true, true, true));
     }
 
     @Test
-    void longStallReleasesOneAttemptOnly() {
+    void fixedTenGetsResponsiveFirstPulseThenStableHalfRate() {
         LegacyMultiVersionPlacementPolicy policy = new LegacyMultiVersionPlacementPolicy();
-        assertFalse(policy.shouldEmitFollowUp(0L, 40, true, true, true, true));
-        assertTrue(policy.shouldEmitFollowUp(2_000_000_000L, 40, true, true, true, true));
-        assertFalse(policy.shouldEmitFollowUp(2_000_000_001L, 40, true, true, true, true));
+        assertEquals(1, policy.pulsesThisTick(10, true, true, true, true));
+        assertEquals(0, policy.pulsesThisTick(10, true, true, true, true));
+        assertEquals(1, policy.pulsesThisTick(10, true, true, true, true));
+        assertEquals(0, policy.pulsesThisTick(10, true, true, true, true));
+        assertEquals(1, policy.pulsesThisTick(10, true, true, true, true));
+    }
+
+    @Test
+    void fortyNeverExceedsTwoPulsesPerTick() {
+        LegacyMultiVersionPlacementPolicy policy = new LegacyMultiVersionPlacementPolicy();
+        for (int i = 0; i < 100; i++) {
+            assertEquals(2, policy.pulsesThisTick(40, true, true, true, true));
+        }
+    }
+
+    @Test
+    void invalidCandidateDropsWorkAndReacquireIsImmediateWithoutBacklog() {
+        LegacyMultiVersionPlacementPolicy policy = new LegacyMultiVersionPlacementPolicy();
+        assertEquals(0, policy.pulsesThisTick(40, true, true, true, false));
+        assertEquals(0, policy.pulsesThisTick(40, true, true, true, false));
+        assertEquals(2, policy.pulsesThisTick(40, true, true, true, true));
+        assertEquals(2, policy.pulsesThisTick(40, true, true, true, true));
+
+        policy.clearRuntimeState();
+        assertEquals(0, policy.pulsesThisTick(10, true, true, true, false));
+        assertEquals(1, policy.pulsesThisTick(10, true, true, true, true));
+    }
+
+    @Test
+    void inactiveOrReleasedInputClearsCadence() {
+        LegacyMultiVersionPlacementPolicy policy = new LegacyMultiVersionPlacementPolicy();
+        assertEquals(1, policy.pulsesThisTick(10, true, true, true, true));
+        assertEquals(0, policy.pulsesThisTick(10, false, true, true, true));
+        assertEquals(1, policy.pulsesThisTick(10, true, true, true, true));
+        assertEquals(0, policy.pulsesThisTick(10, true, true, false, true));
     }
 
     @Test
