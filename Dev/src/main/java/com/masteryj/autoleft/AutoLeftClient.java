@@ -6,19 +6,19 @@ import com.masteryj.core.ActionBudget;
 import com.masteryj.core.ClickScheduler;
 import com.masteryj.core.DebugStats;
 import com.masteryj.core.GameplayGate;
+import com.masteryj.core.PhysicalKeyBinding;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.util.InputUtil;
 import net.minecraft.item.AxeItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
-import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.world.World;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,14 +34,13 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoLeft");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
-    private static final int CURRENT_CONFIG_VERSION = 5;
+    private static final int CURRENT_CONFIG_VERSION = 6;
     private static final int MAX_SAFE_CPS = ClickScheduler.MAX_CPS;
     private static final int DEFAULT_MIN_CPS = 8;
     private static final int DEFAULT_MAX_CPS = 10;
     private static final int LEGACY_DEFAULT_MIN_CPS = 8;
     private static final int LEGACY_DEFAULT_MAX_CPS = 16;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
-    private static final InputUtil.Key LEFT_MOUSE = InputUtil.Type.MOUSE.createFromCode(0);
 
     private final Random random = new Random();
     private final ClickScheduler scheduler = new ClickScheduler();
@@ -51,6 +50,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     public static boolean weaponCheck = true;
     public static int toggleKeyCode = -1;
 
+    private World lastWorld;
     private boolean physicalWasDown;
     private boolean requireRelease;
     private boolean toggleKeyWasDown;
@@ -70,8 +70,16 @@ public final class AutoLeftClient implements ClientModInitializer {
 
         boolean physicalDown = isMouseDown(client, 0);
         boolean rising = physicalDown && !physicalWasDown;
-        boolean activeGameplay = isInActiveGameplay(client);
 
+        if (client == null || client.world != lastWorld) {
+            lastWorld = client == null ? null : client.world;
+            requireRelease = physicalDown;
+            physicalWasDown = physicalDown;
+            resetSession();
+            return;
+        }
+
+        boolean activeGameplay = isInActiveGameplay(client);
         if (DebugStats.ENABLED) {
             if (rising) DebugStats.onAutoLeftPhysicalPress();
             DebugStats.setAutoLeftConfiguredCps(config == null ? 0 : config.minCps,
@@ -80,15 +88,15 @@ public final class AutoLeftClient implements ClientModInitializer {
 
         if (!enabled || !activeGameplay) {
             if (physicalDown) requireRelease = true;
-            resetAutomation();
             physicalWasDown = physicalDown;
+            resetSession();
             return;
         }
 
-        // A button held through a menu, focus loss, death, disable, or world transition must be
-        // released before automation can start again. Vanilla input itself remains untouched.
+        // A hold that crossed a menu, focus loss, death, disable, or world transition may not
+        // restart automation until the configured attack control is physically released.
         if (requireRelease) {
-            resetAutomation();
+            resetCadence();
             if (!physicalDown) {
                 requireRelease = false;
                 physicalWasDown = false;
@@ -100,24 +108,24 @@ public final class AutoLeftClient implements ClientModInitializer {
 
         if (!physicalDown) {
             physicalWasDown = false;
-            resetAutomation();
+            resetCadence();
             return;
         }
 
         physicalWasDown = true;
 
-        // Vanilla already handled the real rising-edge click. Never add a duplicate synthetic
-        // pulse in that same tick.
+        // Vanilla owns the physical rising edge. Synthetic follow-up begins on later ticks only.
         if (rising) {
-            resetAutomation();
+            resetCadence();
             return;
         }
 
         boolean weaponAllowed = !weaponCheck || isHoldingAllowedWeapon(client);
-        boolean lookingAtBlock = isLookingAtBlock(client);
-        if (!shouldRunHeldAttack(enabled, activeGameplay, physicalDown, weaponAllowed, lookingAtBlock)) {
-            // Temporary weapon or crosshair changes pause the cadence without forcing a release.
-            resetAutomation();
+        boolean entityTargeted = client.crosshairTarget instanceof EntityHitResult;
+        if (!shouldRunHeldAttack(enabled, activeGameplay, physicalDown, weaponAllowed, entityTargeted)) {
+            // Never click air: Minecraft applies a miss cooldown there, which was the direct cause
+            // of long holds appearing to stop before the next real entity hit.
+            resetCadence();
             return;
         }
 
@@ -126,32 +134,33 @@ public final class AutoLeftClient implements ClientModInitializer {
 
         ActionBudget.INSTANCE.request(ActionBudget.Module.LEFT, pulses,
                 () -> mayEmit(client),
-                () -> {
-                    // Unit-test fallback. Runtime dispatch calls MinecraftClient.doAttack().
-                    KeyBinding.onKeyPressed(LEFT_MOUSE);
-                    DebugStats.onAutoLeftPulse();
-                });
+                () -> PhysicalKeyBinding.queuePress(client, client.options.attackKey));
     }
 
     private boolean mayEmit(MinecraftClient client) {
         boolean activeGameplay = isInActiveGameplay(client);
         boolean physicalDown = isMouseDown(client, 0);
         boolean weaponAllowed = !weaponCheck || isHoldingAllowedWeapon(client);
-        boolean lookingAtBlock = isLookingAtBlock(client);
-        return shouldRunHeldAttack(enabled, activeGameplay, physicalDown, weaponAllowed, lookingAtBlock);
+        boolean entityTargeted = client != null && client.crosshairTarget instanceof EntityHitResult;
+        return shouldRunHeldAttack(enabled, activeGameplay, physicalDown, weaponAllowed, entityTargeted);
     }
 
     static boolean shouldRunHeldAttack(boolean enabled,
                                        boolean activeGameplay,
                                        boolean physicalDown,
                                        boolean weaponAllowed,
-                                       boolean lookingAtBlock) {
-        return enabled && activeGameplay && physicalDown && weaponAllowed && !lookingAtBlock;
+                                       boolean entityTargeted) {
+        return enabled && activeGameplay && physicalDown && weaponAllowed && entityTargeted;
     }
 
-    private void resetAutomation() {
+    private void resetCadence() {
         scheduler.clear();
         ActionBudget.INSTANCE.cancel(ActionBudget.Module.LEFT);
+    }
+
+    private void resetSession() {
+        scheduler.clear();
+        ActionBudget.INSTANCE.reset(ActionBudget.Module.LEFT);
     }
 
     private int pickCps() {
@@ -162,19 +171,14 @@ public final class AutoLeftClient implements ClientModInitializer {
         return min == max ? min : min + random.nextInt(max - min + 1);
     }
 
-    private boolean isLookingAtBlock(MinecraftClient client) {
-        return client.crosshairTarget != null && client.crosshairTarget.getType() == HitResult.Type.BLOCK;
-    }
-
     private boolean isHoldingAllowedWeapon(MinecraftClient client) {
-        if (client.player == null) return false;
-        ItemStack held = client.player.getMainHandStack();
-        return isSwordOrAxe(held);
+        if (client == null || client.player == null) return false;
+        return isSwordOrAxe(client.player.getMainHandStack());
     }
 
     private boolean isMouseDown(MinecraftClient client, int button) {
-        return client != null && client.getWindow() != null
-                && GLFW.glfwGetMouseButton(client.getWindow().getHandle(), button) == GLFW.GLFW_PRESS;
+        return client != null && client.options != null && button == 0
+                && PhysicalKeyBinding.isPressed(client, client.options.attackKey);
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
@@ -199,11 +203,13 @@ public final class AutoLeftClient implements ClientModInitializer {
         boolean pressed = isToggleBindingPressed(client, key);
         if (pressed && !toggleKeyWasDown) {
             enabled = !enabled;
-            config.enabled = enabled;
-            saveConfig(config);
+            if (config != null) {
+                config.enabled = enabled;
+                saveConfig(config);
+            }
             if (!enabled) {
                 requireRelease = isMouseDown(client, 0);
-                resetAutomation();
+                resetSession();
             }
             sendToggleMessage(client, enabled, "AutoLeft");
         }
@@ -211,7 +217,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     }
 
     private void sendToggleMessage(MinecraftClient client, boolean on, String moduleName) {
-        if (client.player == null) return;
+        if (client == null || client.player == null) return;
         String status = on ? "enabled" : "disabled";
         MutableText text = Text.literal(moduleName + " " + status)
                 .formatted(on ? Formatting.GREEN : Formatting.RED);
@@ -227,13 +233,12 @@ public final class AutoLeftClient implements ClientModInitializer {
         public int maxCps = DEFAULT_MAX_CPS;
 
         public void normalize() {
-            if (configVersion < CURRENT_CONFIG_VERSION) {
-                if (minCps == LEGACY_DEFAULT_MIN_CPS && maxCps == LEGACY_DEFAULT_MAX_CPS) {
-                    minCps = DEFAULT_MIN_CPS;
-                    maxCps = DEFAULT_MAX_CPS;
-                }
-                configVersion = CURRENT_CONFIG_VERSION;
+            if (configVersion < 5
+                    && minCps == LEGACY_DEFAULT_MIN_CPS && maxCps == LEGACY_DEFAULT_MAX_CPS) {
+                minCps = DEFAULT_MIN_CPS;
+                maxCps = DEFAULT_MAX_CPS;
             }
+            configVersion = CURRENT_CONFIG_VERSION;
             minCps = Math.max(1, Math.min(MAX_SAFE_CPS, minCps));
             maxCps = Math.max(1, Math.min(MAX_SAFE_CPS, maxCps));
             if (minCps > maxCps) {
