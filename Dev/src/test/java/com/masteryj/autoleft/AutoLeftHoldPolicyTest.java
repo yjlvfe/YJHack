@@ -8,23 +8,16 @@ import org.junit.jupiter.api.Test;
 class AutoLeftHoldPolicyTest {
 
     @Test
-    void heldAttackRunsOnlyOnARealEntityTarget() {
-        assertTrue(AutoLeftClient.shouldRunHeldAttack(
-                true, true, true, true, true));
-        assertFalse(AutoLeftClient.shouldRunHeldAttack(
-                true, true, true, true, false),
-                "air misses must not trigger Minecraft's miss cooldown");
+    void directAttackRequiresARealEntityTarget() {
+        assertTrue(AutoLeftClient.shouldRunDirectAttack(true, true, true, true));
+        assertFalse(AutoLeftClient.shouldRunDirectAttack(true, true, true, false),
+                "air misses must not trigger direct attacks or miss cooldown");
     }
 
     @Test
-    void heldAttackStopsForEverySafetyGate() {
-        assertFalse(AutoLeftClient.shouldRunHeldAttack(
-                false, true, true, true, true), "disabled module must not emit");
-        assertFalse(AutoLeftClient.shouldRunHeldAttack(
-                true, false, true, true, true), "menus and focus loss must stop emission");
-        assertFalse(AutoLeftClient.shouldRunHeldAttack(
-                true, true, false, true, true), "released input must cancel pending work");
-        assertFalse(AutoLeftClient.shouldRunHeldAttack(
-                true, true, true, false, true), "weapon gate must remain respected");
+    void everySafetyGateStopsDirectAttack() {
+        assertFalse(AutoLeftClient.shouldRunDirectAttack(false, true, true, true));
+        assertFalse(AutoLeftClient.shouldRunDirectAttack(true, false, true, true));
+        assertFalse(AutoLeftClient.shouldRunDirectAttack(true, true, false, true));
     }
 }
