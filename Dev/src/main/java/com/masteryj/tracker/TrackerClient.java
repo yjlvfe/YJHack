@@ -2,10 +2,12 @@ package com.masteryj.tracker;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.masteryj.config.RecommendedSettings;
 import com.masteryj.core.DebugStats;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.HudLayerRegistrationCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.IdentifiedLayer;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -22,6 +24,7 @@ import net.minecraft.scoreboard.AbstractTeam;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.client.render.VertexRendering;
 import org.lwjgl.glfw.GLFW;
@@ -40,20 +43,21 @@ public final class TrackerClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-Tracker");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("tracker.json");
-    private static final int CURRENT_CONFIG_VERSION = 7;
+    private static final int CURRENT_CONFIG_VERSION = 8;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
+    private static final Identifier HUD_LAYER_ID = Identifier.of("yjhack", "tracker_hud");
 
     private final VertexConsumerProvider.Immediate wallHitboxConsumers =
             VertexConsumerProvider.immediate(new BufferAllocator(16384));
     private final List<PlayerEntity> trackedSnapshot = new ArrayList<>();
 
     public static Config config;
-    public static boolean enabled = false;
+    public static boolean enabled;
     public static int toggleKeyCode = -1;
-    public static boolean ignoreOwnTeam = true;
-    public static double range = 48.0D;
-    public static int hudOffsetX = 8;
-    public static int hudY = 8;
+    public static boolean ignoreOwnTeam = RecommendedSettings.TRACKER_IGNORE_TEAM;
+    public static double range = RecommendedSettings.TRACKER_RANGE;
+    public static int hudOffsetX = RecommendedSettings.TRACKER_HUD_X;
+    public static int hudY = RecommendedSettings.TRACKER_HUD_Y;
 
     private long lastConfigCheckAtNanos = Long.MIN_VALUE;
     private FileTime lastKnownConfigWriteTime;
@@ -66,7 +70,11 @@ public final class TrackerClient implements ClientModInitializer {
         config = loadConfig();
         applyRuntimeConfig(config);
         ClientTickEvents.END_CLIENT_TICK.register(DebugStats.timed("Tracker", this::tickTracker));
-        HudRenderCallback.EVENT.register(this::renderHiddenEnemyHud);
+        HudLayerRegistrationCallback.EVENT.register(layeredDrawer ->
+                layeredDrawer.attachLayerAfter(
+                        IdentifiedLayer.MISC_OVERLAYS,
+                        HUD_LAYER_ID,
+                        this::renderHiddenEnemyHud));
         WorldRenderEvents.BEFORE_DEBUG_RENDER.register(this::renderEnemyHitboxes);
     }
 
@@ -263,10 +271,9 @@ public final class TrackerClient implements ClientModInitializer {
                 }
             }
         } catch (Exception e) {
-            LOGGER.warn("Tracker config unreadable; using safe defaults", e);
+            LOGGER.warn("Tracker config unreadable; using recommended defaults", e);
         }
-        Config fresh = new Config();
-        fresh.normalize();
+        Config fresh = recommendedDefaults();
         saveConfig(fresh);
         return fresh;
     }
@@ -307,6 +314,10 @@ public final class TrackerClient implements ClientModInitializer {
         hudY = cfg.hudY;
     }
 
+    public static Config recommendedDefaults() {
+        return Config.recommendedDefaults();
+    }
+
     private static int normalizeToggleKeyCode(int key) {
         if (key >= 1000) return key;
         return key > 0 ? key : -1;
@@ -323,14 +334,42 @@ public final class TrackerClient implements ClientModInitializer {
         public int configVersion = CURRENT_CONFIG_VERSION;
         public boolean enabled = false;
         public int toggleKeyCode = -1;
-        public boolean ignoreOwnTeam = true;
-        public double range = 48.0D;
-        public int hudOffsetX = 8;
-        public int hudY = 8;
+        public boolean ignoreOwnTeam = RecommendedSettings.TRACKER_IGNORE_TEAM;
+        public double range = RecommendedSettings.TRACKER_RANGE;
+        public int hudOffsetX = RecommendedSettings.TRACKER_HUD_X;
+        public int hudY = RecommendedSettings.TRACKER_HUD_Y;
+
+        public static Config recommendedDefaults() {
+            Config cfg = new Config();
+            cfg.configVersion = CURRENT_CONFIG_VERSION;
+            cfg.enabled = false;
+            cfg.toggleKeyCode = -1;
+            cfg.ignoreOwnTeam = RecommendedSettings.TRACKER_IGNORE_TEAM;
+            cfg.range = RecommendedSettings.TRACKER_RANGE;
+            cfg.hudOffsetX = RecommendedSettings.TRACKER_HUD_X;
+            cfg.hudY = RecommendedSettings.TRACKER_HUD_Y;
+            cfg.normalize();
+            return cfg;
+        }
+
+        public Config copy() {
+            Config result = new Config();
+            result.configVersion = configVersion;
+            result.enabled = enabled;
+            result.toggleKeyCode = toggleKeyCode;
+            result.ignoreOwnTeam = ignoreOwnTeam;
+            result.range = range;
+            result.hudOffsetX = hudOffsetX;
+            result.hudY = hudY;
+            result.normalize();
+            return result;
+        }
 
         public void normalize() {
-            if (configVersion < CURRENT_CONFIG_VERSION) configVersion = CURRENT_CONFIG_VERSION;
-            if (Double.isNaN(range) || Double.isInfinite(range)) range = 48.0D;
+            configVersion = CURRENT_CONFIG_VERSION;
+            if (Double.isNaN(range) || Double.isInfinite(range)) {
+                range = RecommendedSettings.TRACKER_RANGE;
+            }
             range = Math.max(1.0D, Math.min(256.0D, range));
             hudOffsetX = Math.max(-10000, Math.min(10000, hudOffsetX));
             hudY = Math.max(-10000, Math.min(10000, hudY));
