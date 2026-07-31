@@ -6,7 +6,6 @@
   "client": [
     "KeyBindingAccessor",
     "MinecraftClientInvoker",
-    "MinecraftClientAttackMixin",
     "ModGuiClientMixin"
   ],
   "injectors": {
