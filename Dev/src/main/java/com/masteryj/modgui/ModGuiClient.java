@@ -79,12 +79,7 @@ public final class ModGuiClient implements ClientModInitializer {
     private abstract static class YjScreen extends Screen {
         private static final long AUTO_SAVE_DELAY_NANOS = 300_000_000L;
 
-        private record Help(int x, int y, int w, int h, List<Text> lines) {
-        }
-
         protected final Screen parent;
-        private final List<Help> helps = new ArrayList<>();
-        private List<Text> pendingTooltip;
         private String toastMessage;
         private long toastUntilNanos;
         private boolean dirty;
@@ -130,7 +125,6 @@ public final class ModGuiClient implements ClientModInitializer {
         /** Rebuilds this page's widgets in place; the screen is not closed or replaced. */
         protected final void refreshControls() {
             clearChildren();
-            clearHelps();
             init();
         }
 
@@ -222,13 +216,11 @@ public final class ModGuiClient implements ClientModInitializer {
 
         @Override
         public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-            pendingTooltip = null;
             context.fill(0, 0, width, height, YjTheme.SCREEN_TINT);
             renderChrome(context, mouseX, mouseY);
             renderContent(context, mouseX, mouseY, delta);
             super.render(context, mouseX, mouseY, delta);
-            resolveHelp(mouseX, mouseY);
-            renderTooltipAndToast(context, mouseX, mouseY);
+            renderToast(context, mouseX, mouseY);
         }
 
         private void renderChrome(DrawContext context, int mouseX, int mouseY) {
@@ -323,30 +315,7 @@ public final class ModGuiClient implements ClientModInitializer {
                     x + 5, y + 2, color, false);
         }
 
-        protected final void addHelp(int x, int y, int w, int h, String... lines) {
-            List<Text> texts = new ArrayList<>();
-            for (String line : lines) texts.add(Text.literal(line));
-            helps.add(new Help(x, y, w, h, texts));
-        }
-
-        protected final void clearHelps() {
-            helps.clear();
-        }
-
-        private void resolveHelp(int mouseX, int mouseY) {
-            for (Help help : helps) {
-                if (mouseX >= help.x && mouseX <= help.x + help.w
-                        && mouseY >= help.y && mouseY <= help.y + help.h) {
-                    pendingTooltip = help.lines;
-                    return;
-                }
-            }
-        }
-
-        private void renderTooltipAndToast(DrawContext context, int mouseX, int mouseY) {
-            if (pendingTooltip != null && !pendingTooltip.isEmpty()) {
-                context.drawTooltip(textRenderer, pendingTooltip, mouseX, mouseY);
-            }
+        private void renderToast(DrawContext context, int mouseX, int mouseY) {
             if (toastMessage != null && System.nanoTime() < toastUntilNanos) {
                 int toastW = textRenderer.getWidth(toastMessage) + 20;
                 int toastX = winX() + winW() - toastW - 12;
@@ -444,7 +413,6 @@ public final class ModGuiClient implements ClientModInitializer {
         @Override
         protected void init() {
             cards.clear();
-            clearHelps();
             int gap = 8;
             int cardW = Math.max(130, (contentW() - gap) / 2);
             int cardH = 58;
@@ -471,7 +439,6 @@ public final class ModGuiClient implements ClientModInitializer {
                              String description, Supplier<Boolean> enabled,
                              Supplier<String> summary) {
             cards.add(new Card(x, y, w, h, id, label, description, enabled, summary));
-            addHelp(x, y, w, h, label, summary.get(), "Click to configure");
         }
 
         @Override
@@ -529,7 +496,6 @@ public final class ModGuiClient implements ClientModInitializer {
 
         @Override
         protected void init() {
-            clearHelps();
             int x = contentX();
             int y = contentTop() + 34;
             int w = contentW();
@@ -560,10 +526,6 @@ public final class ModGuiClient implements ClientModInitializer {
             addSlider(x, y + 240, w, "HUD Y", 4, 1000, AutoLeftClient.cpsHudY, true,
                     value -> AutoLeftClient.cpsHudY = (int) Math.round(value));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.autoLeft()));
-            addHelp(x, y + 66, w, 22,
-                    "Attempt rate: 1–40 CPS.",
-                    "Recommended: 12 CPS.",
-                    "Server acceptance and damage are not guaranteed by CPS.");
         }
 
         @Override
@@ -602,7 +564,6 @@ public final class ModGuiClient implements ClientModInitializer {
 
         @Override
         protected void init() {
-            clearHelps();
             int x = contentX();
             int y = contentTop() + 34;
             int w = contentW();
@@ -622,10 +583,6 @@ public final class ModGuiClient implements ClientModInitializer {
                 saveNow();
             }));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.autoRight()));
-            addHelp(x, y + 66, w, 22,
-                    "Recommended: 10 CPS for conservative block attempts.",
-                    "Fire Charge, pearls and other instant items use once per press.",
-                    "Food, bows and hold items remain vanilla.");
         }
 
         @Override
@@ -664,7 +621,6 @@ public final class ModGuiClient implements ClientModInitializer {
 
         @Override
         protected void init() {
-            clearHelps();
             int x = contentX();
             int y = contentTop() + 34;
             int w = contentW();
@@ -684,10 +640,6 @@ public final class ModGuiClient implements ClientModInitializer {
             addSlider(x, y + 94, w, "Slot delay", 50, 500, cfg.switchDelayMs, true,
                     value -> cfg.switchDelayMs = (int) Math.round(value));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.ninjaBridge()));
-            addHelp(x, y + 94, w, 22,
-                    "Recommended slot delay: 120 ms.",
-                    "Block-to-block stack transitions preserve the physical hold.",
-                    "Switching to non-block items cancels block context.");
         }
 
         @Override
@@ -731,7 +683,6 @@ public final class ModGuiClient implements ClientModInitializer {
 
         @Override
         protected void init() {
-            clearHelps();
             int x = contentX();
             int y = contentTop() + 32;
             int w = contentW();
@@ -764,10 +715,6 @@ public final class ModGuiClient implements ClientModInitializer {
             addSlider(x, y + 232, w, "FOV", 10, 180, cfg.fov, false,
                     value -> cfg.fov = (float) value);
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.aimAssist()));
-            addHelp(x, y + 142, w, 22,
-                    "Target retention is capped absolutely at 3.5 blocks.",
-                    "This does not increase attack reach.",
-                    "Tracking through solid blocks is never permitted.");
         }
 
         @Override
@@ -824,7 +771,6 @@ public final class ModGuiClient implements ClientModInitializer {
 
         @Override
         protected void init() {
-            clearHelps();
             int x = contentX();
             int y = contentTop() + 32;
             int w = contentW();
@@ -855,9 +801,6 @@ public final class ModGuiClient implements ClientModInitializer {
             addSlider(x, y + 232, w, "HUD Y", 4, 1000, cfg.hudY, true,
                     value -> cfg.hudY = (int) Math.round(value));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.tracker()));
-            addHelp(x, y + 118, w, 76,
-                    "Click or drag the marker to edit the HUD position.",
-                    "Tracker uses only player entities already present in client state.");
         }
 
         @Override
