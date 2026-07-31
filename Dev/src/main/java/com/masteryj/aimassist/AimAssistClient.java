@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.masteryj.core.DebugStats;
 import com.masteryj.core.GameplayGate;
+import com.masteryj.core.PhysicalKeyBinding;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -38,12 +39,11 @@ public final class AimAssistClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AimAssist");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("aimassist.json");
-    private static final int CURRENT_CONFIG_VERSION = 7;
+    private static final int CURRENT_CONFIG_VERSION = 8;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
-    private static final double LOCK_DISTANCE_SQUARED = 16.0D;
 
     private final Random random = new Random();
-    /** Fresh for one client tick only: avoids duplicate raycasts without allowing stale visibility. */
+    /** Fresh for one client tick only: avoids duplicate raycasts without stale visibility. */
     private final Map<Integer, AimSample> tickSampleCache = new HashMap<>();
     private World lastWorld;
     private PlayerEntity target;
@@ -51,7 +51,8 @@ public final class AimAssistClient implements ClientModInitializer {
     private FileTime lastKnownConfigWriteTime;
     private boolean toggleKeyWasDown;
     private boolean requireToggleRelease;
-    private boolean leftWasDown;
+    private boolean attackWasDown;
+    private boolean requireAttackRelease;
     private float targetOffsetX;
     private float targetOffsetY;
     private float offsetVelocityX;
@@ -77,19 +78,34 @@ public final class AimAssistClient implements ClientModInitializer {
         maybeReloadConfig();
         handleToggleKey(client);
 
-        if (client.world != lastWorld) {
-            lastWorld = client.world;
+        boolean attackDown = isMouseDown(client, 0);
+        boolean useDown = isMouseDown(client, 1);
+
+        if (client == null || client.world != lastWorld) {
+            lastWorld = client == null ? null : client.world;
             clearTarget();
-            leftWasDown = false;
+            requireAttackRelease = attackDown;
+            attackWasDown = attackDown;
+            return;
         }
 
-        boolean leftDown = isMouseDown(client, 0);
-        boolean rightDown = isMouseDown(client, 1);
-        boolean leftRising = leftDown && !leftWasDown;
-        leftWasDown = leftDown;
+        boolean attackRising = attackDown && !attackWasDown;
+        attackWasDown = attackDown;
 
         if (!enabled || !isInActiveGameplay(client)) {
+            if (attackDown) requireAttackRelease = true;
             clearTarget();
+            return;
+        }
+
+        // A hold crossing a menu, focus loss, disable, death, or world transition must be released
+        // before AimAssist can acquire again. This prevents a stale held click from snapping aim.
+        if (requireAttackRelease) {
+            clearTarget();
+            if (!attackDown) {
+                requireAttackRelease = false;
+                attackWasDown = false;
+            }
             return;
         }
 
@@ -97,27 +113,25 @@ public final class AimAssistClient implements ClientModInitializer {
         boolean holdingPlaceableBlock = isHoldingPlaceableBlock(client);
         boolean breakingBlock = client.interactionManager != null
                 && client.interactionManager.isBreakingBlock();
-        boolean blockAttackStarted = leftRising && lookingAtBlock;
-        boolean placingBlock = rightDown && lookingAtBlock && holdingPlaceableBlock;
-        if (target != null
-                && shouldCancelForBlockAction(breakingBlock, blockAttackStarted, placingBlock)) {
+        boolean blockAttackStarted = attackRising && lookingAtBlock;
+        boolean placingBlock = useDown && lookingAtBlock && holdingPlaceableBlock;
+
+        // Block actions always win, even when there is no existing target. The old target-only gate
+        // allowed a new player lock to be acquired on the same tick mining started.
+        if (shouldCancelForBlockAction(breakingBlock, blockAttackStarted, placingBlock)) {
             clearTarget();
             return;
         }
 
-        // Once acquired, keep the same player latched until a block action, invalid entity,
-        // world/state reset, or the target moves beyond exactly four blocks.
-        if (!isLatchedTargetValid(client, target)) {
-            clearTarget();
-        }
+        if (!isLatchedTargetValid(client, target)) clearTarget();
 
-        // A new lock is only acquired while the physical attack button is held.
+        // A new lock is only acquired while the real configured attack control is held.
         if (target == null) {
-            if (!leftDown) return;
+            if (!attackDown) return;
 
             if (client.crosshairTarget instanceof EntityHitResult entityHit
                     && entityHit.getEntity() instanceof PlayerEntity direct
-                    && isTargetValid(client, direct, LOCK_DISTANCE_SQUARED, fov)) {
+                    && isTargetValid(client, direct, AimAssistRangePolicy.MAX_DISTANCE_SQUARED, fov)) {
                 target = direct;
             }
             if (target == null) target = findBestTarget(client);
@@ -126,11 +140,12 @@ public final class AimAssistClient implements ClientModInitializer {
         if (target == null) return;
 
         AimSample sample = getAimSample(client, target);
+        // Never keep or steer a lock through terrain. Visibility is recalculated every tick.
         if (sample == null) {
-            // Keep the lock through a brief obstruction; do not steer through the wall.
+            clearTarget();
             return;
         }
-        if (!isWithinLockDistance(sample.distanceSquared())) {
+        if (!AimAssistRangePolicy.isWithinDistance(sample.distanceSquared())) {
             clearTarget();
             return;
         }
@@ -139,9 +154,9 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     private boolean isInActiveGameplay(MinecraftClient client) {
-        boolean hasPlayer = client.player != null;
-        boolean hasWorld = client.world != null;
-        return GameplayGate.active(hasPlayer, hasWorld,
+        boolean hasPlayer = client != null && client.player != null;
+        boolean hasWorld = client != null && client.world != null;
+        return client != null && GameplayGate.active(hasPlayer, hasWorld,
                 client.currentScreen != null, client.isWindowFocused(), client.mouse.isCursorLocked(),
                 hasPlayer && client.player.isAlive(), hasPlayer && client.player.isSpectator());
     }
@@ -150,7 +165,7 @@ public final class AimAssistClient implements ClientModInitializer {
         PlayerEntity best = null;
         double bestScore = Double.MAX_VALUE;
         for (PlayerEntity candidate : client.world.getPlayers()) {
-            if (!isTargetValid(client, candidate, LOCK_DISTANCE_SQUARED, fov)) continue;
+            if (!isTargetValid(client, candidate, AimAssistRangePolicy.MAX_DISTANCE_SQUARED, fov)) continue;
             AimSample sample = getAimSample(client, candidate);
             if (sample == null) continue;
 
@@ -180,11 +195,12 @@ public final class AimAssistClient implements ClientModInitializer {
         return isBasicTargetValid(client, candidate)
                 && candidate.getWorld() == client.world
                 && client.world.getEntityById(candidate.getId()) == candidate
-                && isWithinLockDistance(client.player.squaredDistanceTo(candidate));
+                && AimAssistRangePolicy.isWithinDistance(client.player.squaredDistanceTo(candidate));
     }
 
     private boolean isBasicTargetValid(MinecraftClient client, PlayerEntity candidate) {
-        return client.player != null
+        return client != null
+                && client.player != null
                 && client.world != null
                 && candidate != null
                 && candidate != client.player
@@ -196,7 +212,7 @@ public final class AimAssistClient implements ClientModInitializer {
     private boolean insideFov(MinecraftClient client, AimSample sample, float allowedFov) {
         float yaw = Math.abs(MathHelper.wrapDegrees(sample.angles().yaw() - client.player.getYaw()));
         float pitch = Math.abs(MathHelper.wrapDegrees(sample.angles().pitch() - client.player.getPitch()));
-        return yaw <= allowedFov && pitch <= allowedFov;
+        return Math.hypot(yaw, pitch) <= allowedFov;
     }
 
     private boolean isFriendlyTarget(MinecraftClient client, PlayerEntity candidate) {
@@ -205,7 +221,7 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     private AimSample getAimSample(MinecraftClient client, PlayerEntity candidate) {
-        if (client.player == null || client.world == null || candidate == null) return null;
+        if (client == null || client.player == null || client.world == null || candidate == null) return null;
         int id = candidate.getId();
         if (tickSampleCache.containsKey(id)) return tickSampleCache.get(id);
 
@@ -283,7 +299,7 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     private boolean isHoldingPlaceableBlock(MinecraftClient client) {
-        if (client.player == null) return false;
+        if (client == null || client.player == null) return false;
         return isBlockItem(client.player.getMainHandStack())
                 || isBlockItem(client.player.getOffHandStack());
     }
@@ -299,7 +315,7 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     static boolean isWithinLockDistance(double distanceSquared) {
-        return Double.isFinite(distanceSquared) && distanceSquared <= LOCK_DISTANCE_SQUARED;
+        return AimAssistRangePolicy.isWithinDistance(distanceSquared);
     }
 
     private void clearTarget() {
@@ -312,14 +328,15 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     private boolean isMouseDown(MinecraftClient client, int button) {
-        return client != null && client.getWindow() != null
-                && GLFW.glfwGetMouseButton(client.getWindow().getHandle(), button) == GLFW.GLFW_PRESS;
+        if (client == null || client.options == null) return false;
+        if (button == 0) return PhysicalKeyBinding.isPressed(client, client.options.attackKey);
+        return button == 1 && PhysicalKeyBinding.isPressed(client, client.options.useKey);
     }
 
     private void handleToggleKey(MinecraftClient client) {
         int key = normalizeToggleKeyCode(toggleKeyCode);
         boolean rawDown = key != -1 && isRawBindingPressed(client, key);
-        if (client.currentScreen != null || !client.isWindowFocused()) {
+        if (client == null || client.currentScreen != null || !client.isWindowFocused()) {
             if (rawDown) requireToggleRelease = true;
             toggleKeyWasDown = rawDown;
             return;
@@ -333,9 +350,14 @@ public final class AimAssistClient implements ClientModInitializer {
         }
         if (rawDown && !toggleKeyWasDown) {
             enabled = !enabled;
-            config.enabled = enabled;
-            saveConfig(config);
+            if (config != null) {
+                config.enabled = enabled;
+                saveConfig(config);
+            }
             if (!enabled) {
+                boolean attackDown = isMouseDown(client, 0);
+                requireAttackRelease = attackDown;
+                attackWasDown = attackDown;
                 clearTarget();
             }
             sendToggleMessage(client, enabled);
@@ -344,7 +366,7 @@ public final class AimAssistClient implements ClientModInitializer {
     }
 
     private void sendToggleMessage(MinecraftClient client, boolean on) {
-        if (client.player == null) return;
+        if (client == null || client.player == null) return;
         Text text = Text.literal("AimAssist " + (on ? "enabled" : "disabled"))
                 .formatted(on ? Formatting.GREEN : Formatting.RED);
         client.player.sendMessage(text, true);
@@ -447,7 +469,7 @@ public final class AimAssistClient implements ClientModInitializer {
         public float fov = 70.0F;
 
         public void normalize() {
-            if (configVersion < CURRENT_CONFIG_VERSION) configVersion = CURRENT_CONFIG_VERSION;
+            configVersion = CURRENT_CONFIG_VERSION;
             speed = sanitize(speed, 0.28F, 0.01F, 1.0F);
             smoothness = sanitize(smoothness, 0.45F, 0.0F, 1.0F);
             fov = sanitize(fov, 70.0F, 10.0F, 180.0F);
