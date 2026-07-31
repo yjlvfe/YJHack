@@ -9,20 +9,20 @@ import org.junit.jupiter.api.Test;
 class AimAssistLockPolicyTest {
 
     @Test
-    void absoluteRangeEndsImmediatelyAfterThreePointFiveBlocks() {
+    void absoluteRangeEndsImmediatelyAfterSixBlocks() {
         assertTrue(AimAssistRangePolicy.isWithinAbsoluteDistance(0.0D));
-        assertTrue(AimAssistRangePolicy.isWithinAbsoluteDistance(12.25D));
-        assertFalse(AimAssistRangePolicy.isWithinAbsoluteDistance(12.250_001D));
+        assertTrue(AimAssistRangePolicy.isWithinAbsoluteDistance(36.0D));
+        assertFalse(AimAssistRangePolicy.isWithinAbsoluteDistance(36.000_001D));
         assertFalse(AimAssistRangePolicy.isWithinAbsoluteDistance(Double.NaN));
         assertFalse(AimAssistRangePolicy.isWithinAbsoluteDistance(Double.POSITIVE_INFINITY));
     }
 
     @Test
-    void configuredRangeCanNeverExceedThreePointFive() {
-        assertEquals(3.5D, AimAssistRangePolicy.clampConfiguredDistance(999.0D), 0.0D);
-        assertEquals(3.5D, AimAssistRangePolicy.clampConfiguredDistance(Double.NaN), 0.0D);
-        assertTrue(AimAssistClient.isWithinLockDistance(12.25D, 999.0D));
-        assertFalse(AimAssistClient.isWithinLockDistance(12.250_001D, 999.0D));
+    void configuredRangeCanNeverExceedSix() {
+        assertEquals(6.0D, AimAssistRangePolicy.clampConfiguredDistance(999.0D), 0.0D);
+        assertEquals(6.0D, AimAssistRangePolicy.clampConfiguredDistance(Double.NaN), 0.0D);
+        assertTrue(AimAssistClient.isWithinLockDistance(36.0D, 999.0D));
+        assertFalse(AimAssistClient.isWithinLockDistance(36.000_001D, 999.0D));
     }
 
     @Test

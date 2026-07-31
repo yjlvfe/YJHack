@@ -706,7 +706,7 @@ public final class ModGuiClient implements ClientModInitializer {
             ToggleSwitch lineOfSight = addDrawableChild(new ToggleSwitch(x, y + 112, w, 22,
                     "Line of Sight (required)", true, value -> { }));
             lineOfSight.active = false;
-            addSlider(x, y + 142, w, "Range", 1.0, 3.5, cfg.range, false,
+            addSlider(x, y + 142, w, "Range", 1.0, 6.0, cfg.range, false,
                     value -> cfg.range = value);
             addSlider(x, y + 172, w, "Speed", 0.01, 1.0, cfg.speed, false,
                     value -> cfg.speed = (float) value);
@@ -714,6 +714,10 @@ public final class ModGuiClient implements ClientModInitializer {
                     value -> cfg.smoothness = (float) value);
             addSlider(x, y + 232, w, "FOV", 10, 180, cfg.fov, false,
                     value -> cfg.fov = (float) value);
+            addDrawableChild(new ToggleSwitch(x, y + 262, w, 22, "Humanized Aim (Anti-Cheat)", cfg.humanizedAim, value -> {
+                cfg.humanizedAim = value;
+                saveNow();
+            }));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.aimAssist()));
         }
 

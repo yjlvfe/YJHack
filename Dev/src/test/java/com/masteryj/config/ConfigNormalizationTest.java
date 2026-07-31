@@ -78,7 +78,7 @@ class ConfigNormalizationTest {
         assertEquals(0.22F, cfg.speed, 1.0E-6F);
         assertEquals(1.0F, cfg.smoothness, 1.0E-6F);
         assertEquals(10.0F, cfg.fov, 1.0E-6F);
-        assertEquals(3.5D, cfg.range, 1.0E-6D);
+        assertEquals(6.0D, cfg.range, 1.0E-6D);
         assertTrue(cfg.lineOfSight);
     }
 

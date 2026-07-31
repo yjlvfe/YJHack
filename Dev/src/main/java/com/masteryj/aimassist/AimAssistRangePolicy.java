@@ -3,7 +3,7 @@ package com.masteryj.aimassist;
 /** Hard legal boundary for AimAssist target retention. This never changes attack reach. */
 public final class AimAssistRangePolicy {
 
-    public static final double ABSOLUTE_MAX_DISTANCE = 3.5D;
+    public static final double ABSOLUTE_MAX_DISTANCE = 6.0D;
     public static final double ABSOLUTE_MAX_DISTANCE_SQUARED =
             ABSOLUTE_MAX_DISTANCE * ABSOLUTE_MAX_DISTANCE;
 

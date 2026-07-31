@@ -64,6 +64,9 @@ public final class AimAssistClient implements ClientModInitializer {
     public static boolean stickyLock = RecommendedSettings.AIM_STICKY_LOCK;
     public static boolean lineOfSight = RecommendedSettings.AIM_LINE_OF_SIGHT;
     public static boolean bedLock = RecommendedSettings.AIM_BED_LOCK;
+    public static boolean humanizedAim = true;
+
+    private final HumanizedAimAssist humanizer = new HumanizedAimAssist();
 
     @Override
     public void onInitializeClient() {
@@ -298,6 +301,16 @@ public final class AimAssistClient implements ClientModInitializer {
         float progress = MathHelper.clamp(1.0F - Math.abs(yawDelta) / Math.max(1.0F, fov), 0.0F, 1.0F);
         float sCurve = progress * progress * (3.0F - 2.0F * progress);
         float lerp = MathHelper.clamp(baseLerp * (0.6F + sCurve * 0.9F), 0.001F, 1.0F);
+
+        if (humanizedAim) {
+            int targetId = target != null ? target.getId() : 0;
+            HumanizedAimAssist.HumanizedAimResult result =
+                    humanizer.apply(yawDelta, pitchDelta, lerp, targetId);
+            yawDelta = result.yawDelta();
+            pitchDelta = result.pitchDelta();
+            lerp = result.lerp();
+        }
+
         float newYaw = currentYaw + yawDelta * lerp;
         float newPitch = currentPitch
                 + pitchDelta * MathHelper.clamp(lerp * 0.82F, 0.001F, 1.0F);
@@ -418,6 +431,7 @@ public final class AimAssistClient implements ClientModInitializer {
         stickyLock = cfg.stickyLock;
         lineOfSight = cfg.lineOfSight;
         bedLock = cfg.bedLock;
+        humanizedAim = cfg.humanizedAim;
     }
 
     private static int normalizeToggleKeyCode(int key) {
@@ -449,6 +463,7 @@ public final class AimAssistClient implements ClientModInitializer {
         public boolean stickyLock = RecommendedSettings.AIM_STICKY_LOCK;
         public boolean lineOfSight = RecommendedSettings.AIM_LINE_OF_SIGHT;
         public boolean bedLock = RecommendedSettings.AIM_BED_LOCK;
+        public boolean humanizedAim = true;
 
         public static Config recommendedDefaults() {
             Config cfg = new Config();
@@ -462,6 +477,7 @@ public final class AimAssistClient implements ClientModInitializer {
             cfg.stickyLock = RecommendedSettings.AIM_STICKY_LOCK;
             cfg.lineOfSight = true;
             cfg.bedLock = RecommendedSettings.AIM_BED_LOCK;
+            cfg.humanizedAim = true;
             cfg.normalize();
             return cfg;
         }
@@ -478,6 +494,7 @@ public final class AimAssistClient implements ClientModInitializer {
             result.stickyLock = stickyLock;
             result.lineOfSight = lineOfSight;
             result.bedLock = bedLock;
+            result.humanizedAim = humanizedAim;
             result.normalize();
             return result;
         }
