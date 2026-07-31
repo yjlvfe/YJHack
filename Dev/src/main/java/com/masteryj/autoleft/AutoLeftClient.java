@@ -147,9 +147,16 @@ public final class AutoLeftClient implements ClientModInitializer {
         // There is one follow-up owner only: vanilla held-repeat is suppressed while the policy
         // invokes Minecraft's own doAttack(). The physical state is read separately from GLFW.
         restoreVanillaAttack(client, false);
-        if (combatPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
-                enabled, activeGameplay, physicalDown, entityTargeted)
-                && clickLimiter.acquire(System.nanoTime(), cps, jitterEnabled)) {
+        boolean shouldFire;
+        if (jitterEnabled) {
+            shouldFire = combatPolicy.shouldEmitFollowUp(
+                    enabled, activeGameplay, physicalDown, entityTargeted)
+                    && clickLimiter.acquire(System.nanoTime(), cps, true);
+        } else {
+            shouldFire = combatPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
+                    enabled, activeGameplay, physicalDown, entityTargeted);
+        }
+        if (shouldFire) {
             ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
             leftCpsTracker.recordClick();
         }

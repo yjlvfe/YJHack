@@ -27,12 +27,22 @@ public final class LegacyMultiVersionCombatPolicy {
         return limiter.acquire(nowNanos, cps);
     }
 
-    /** Clears timing only. It does not change settings or create input. */
+    /** Policy check only — skips the internal fixed-CPS limiter. Caller provides its own timing gate. */
+    public boolean shouldEmitFollowUp(boolean enabled,
+                                      boolean activeGameplay,
+                                      boolean physicalAttackDown,
+                                      boolean vanillaEntityTarget) {
+        if (!enabled || !activeGameplay || !physicalAttackDown || !vanillaEntityTarget) {
+            clearRuntimeState();
+            return false;
+        }
+        return true;
+    }
+
     public void clearRuntimeState() {
         limiter.clearTimingState();
     }
 
-    /** Explicit name for dropping overdue work; there is no queue to drain. */
     public void discardOverduePulse() {
         limiter.clearTimingState();
     }
