@@ -72,9 +72,6 @@ public final class ModGuiClient implements ClientModInitializer {
       });
    }
 
-   // =====================================================================
-   //  NAV MODEL
-   // =====================================================================
    private record NavItem(String id, String label) {
    }
 
@@ -98,9 +95,6 @@ public final class ModGuiClient implements ClientModInitializer {
       };
    }
 
-   // =====================================================================
-   //  BASE SCREEN — layout, chrome, no-blur background, debounced saving
-   // =====================================================================
    private abstract static class YjScreen extends Screen {
       private record Help(int x, int y, int w, int h, List<Text> lines) {
       }
@@ -120,20 +114,17 @@ public final class ModGuiClient implements ClientModInitializer {
 
       protected abstract String navId();
 
-      /** Push the edited config into the module's live runtime state (no file write). */
       protected void applyLive() {
       }
 
-      /** Write the config to disk through the module's typed static save. */
       protected void commit() {
       }
 
       @Override
       public boolean shouldPause() {
-         return false;   // keep the world ticking / visible behind the panel
+         return false;
       }
 
-      // ---- responsive layout ----
       protected int winW() {
          return Math.max(300, Math.min(452, this.width - 20));
       }
@@ -182,7 +173,6 @@ public final class ModGuiClient implements ClientModInitializer {
          return winY() + winH() - footerH();
       }
 
-      // ---- edit lifecycle ----
       protected void markEdited() {
          this.applyLive();
          this.dirty = true;
@@ -197,7 +187,6 @@ public final class ModGuiClient implements ClientModInitializer {
       @Override
       public void tick() {
          super.tick();
-         // Debounced save: commit shortly after the last edit, never every frame.
          if (this.dirty && System.nanoTime() - this.lastEditNanos > 350_000_000L) {
             this.commit();
             this.dirty = false;
@@ -215,26 +204,21 @@ public final class ModGuiClient implements ClientModInitializer {
          }
       }
 
-      // ---- NO vanilla blur / darkening ----
       @Override
       public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
-         // Intentionally empty: the light tint is drawn in render(). Not calling
-         // super.renderBackground() means applyBlur()/renderDarkening() never run,
-         // so the world and nearby players stay clearly visible.
       }
 
       @Override
       public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
          this.pendingTooltip = null;
-         ctx.fill(0, 0, this.width, this.height, YjTheme.SCREEN_TINT);   // light tint only
+         ctx.fill(0, 0, this.width, this.height, YjTheme.SCREEN_TINT);
          this.renderChrome(ctx, mouseX, mouseY);
          this.renderContent(ctx, mouseX, mouseY, delta);
-         super.render(ctx, mouseX, mouseY, delta);                    // widgets on top
+         super.render(ctx, mouseX, mouseY, delta);
          this.renderHelpTooltips(mouseX, mouseY);
          this.renderTooltipAndToast(ctx, mouseX, mouseY);
       }
 
-      /** Page body drawn under the widgets (headings, descriptions). */
       protected void renderContent(DrawContext ctx, int mouseX, int mouseY, float delta) {
       }
 
@@ -245,7 +229,6 @@ public final class ModGuiClient implements ClientModInitializer {
          int h = winH();
          YjTheme.panel(ctx, x, y, w, h, YjTheme.PANEL, YjTheme.BORDER);
 
-         // Header
          ctx.fill(x + 1, y + 1, x + w - 1, y + headerH(), YjTheme.HEADER);
          ctx.fill(x + 1, y + headerH() - 1, x + w - 1, y + headerH(), YjTheme.ACCENT);
          TextRenderer tr = this.textRenderer;
@@ -256,7 +239,6 @@ public final class ModGuiClient implements ClientModInitializer {
             ctx.drawText(tr, status, x + w - 12 - tr.getWidth(status), y + 8, YjTheme.TEXT_DIM, false);
          }
 
-         // Sidebar
          int sbTop = y + headerH();
          int sbBottom = y + h;
          ctx.fill(x + 1, sbTop, x + sidebarW(), sbBottom - 1, YjTheme.SIDEBAR);
@@ -311,7 +293,6 @@ public final class ModGuiClient implements ClientModInitializer {
          return super.mouseClicked(mouseX, mouseY, button);
       }
 
-      // ---- help / tooltip registration ----
       protected void addHelp(int x, int y, int w, int h, String... lines) {
          List<Text> t = new ArrayList<>();
          for (String l : lines) {
@@ -348,7 +329,6 @@ public final class ModGuiClient implements ClientModInitializer {
          }
       }
 
-      // ---- shared header/heading helpers ----
       protected void drawHeading(DrawContext ctx, String title, String subtitle) {
          TextRenderer tr = this.textRenderer;
          ctx.drawText(tr, Text.literal(title).formatted(Formatting.BOLD), contentX(), contentTop(), YjTheme.TEXT, false);
@@ -367,11 +347,6 @@ public final class ModGuiClient implements ClientModInitializer {
          ctx.drawText(tr, Text.literal(s).formatted(Formatting.BOLD), x + 5, y + 2, col, false);
       }
 
-      /**
-       * Adds a themed slider with a synced numeric entry box to its right.
-       * The setter writes the value into the screen's config; live-apply + debounced
-       * save are handled here. Dragging never writes the file.
-       */
       protected ThemeSlider addSlider(int x, int y, int totalW, String label,
                                       double min, double max, double value, boolean asInt, DoubleConsumer setter) {
          int fieldW = 46;
@@ -399,7 +374,6 @@ public final class ModGuiClient implements ClientModInitializer {
                setter.accept(v);
                this.markEdited();
             } catch (NumberFormatException ignored) {
-               // Partial / invalid entry: keep the slider where it is until valid.
             }
          });
          this.addDrawableChild(slider);
@@ -407,7 +381,6 @@ public final class ModGuiClient implements ClientModInitializer {
          return slider;
       }
 
-      /** Save + Reset + Back bar pinned to the panel footer. */
       protected void addActionBar(Runnable onReset) {
          int y = footerY() + (footerH() - YjTheme.CTRL_H) / 2;
          int right = winX() + winW() - YjTheme.PAD;
@@ -423,9 +396,6 @@ public final class ModGuiClient implements ClientModInitializer {
       }
    }
 
-   // =====================================================================
-   //  DASHBOARD
-   // =====================================================================
    private static final class DashboardScreen extends YjScreen {
       private record Card(int x, int y, int w, int h, String id, String label, String desc,
                           Supplier<Boolean> enabled, Supplier<String> summary) {
@@ -471,8 +441,6 @@ public final class ModGuiClient implements ClientModInitializer {
          int x0 = contentX();
          int y0 = contentTop() + 28;
          int i = 0;
-         // Card face stays to three lines (name / short desc / one key value); the
-         // remaining detail (toggle key + secondary flag) moves to the hover tooltip.
          i = addCard(i, cols, cardW, cardH, gap, x0, y0, "autoleft", "Auto Left", "Left-click automation",
             () -> AutoLeftClient.config != null && AutoLeftClient.config.enabled,
             () -> AutoLeftClient.config != null ? AutoLeftClient.config.toggleKeyCode : -1,
@@ -509,7 +477,6 @@ public final class ModGuiClient implements ClientModInitializer {
          int x = x0 + col * (cardW + gap);
          int y = y0 + row * (cardH + gap);
          this.cards.add(new Card(x, y, cardW, cardH, id, label, desc, enabled, summary));
-         // Hover tooltip carries the detail that used to crowd the card face.
          List<String> tip = new ArrayList<>();
          tip.add(label);
          tip.add("Toggle key: " + YjTheme.keyName(key.get()).getString());
@@ -530,7 +497,6 @@ public final class ModGuiClient implements ClientModInitializer {
             boolean on = Boolean.TRUE.equals(card.enabled().get());
             YjTheme.panel(ctx, card.x(), card.y(), card.w(), card.h(), hovered ? YjTheme.CARD_HOVER : YjTheme.CARD, YjTheme.BORDER_SOFT);
             ctx.fill(card.x(), card.y(), card.x() + 2, card.y() + card.h(), on ? YjTheme.ACCENT : YjTheme.TEXT_MUTED);
-            // Three lines only, with more breathing room; details live in the hover tooltip.
             ctx.drawText(tr, Text.literal(card.label()).formatted(Formatting.BOLD), card.x() + 10, card.y() + 9, YjTheme.TEXT, false);
             int dotX = card.x() + card.w() - 12;
             ctx.fill(dotX, card.y() + 11, dotX + 5, card.y() + 16, on ? YjTheme.SUCCESS : YjTheme.TEXT_MUTED);
@@ -542,9 +508,7 @@ public final class ModGuiClient implements ClientModInitializer {
 
       @Override
       public boolean mouseClicked(double mouseX, double mouseY, int button) {
-         if (super.mouseClicked(mouseX, mouseY, button)) {
-            return true;
-         }
+         if (super.mouseClicked(mouseX, mouseY, button)) return true;
          if (button == 0 && this.client != null) {
             for (Card card : this.cards) {
                if (card.contains(mouseX, mouseY)) {
@@ -557,9 +521,6 @@ public final class ModGuiClient implements ClientModInitializer {
       }
    }
 
-   // =====================================================================
-   //  SETTINGS SCREENS
-   // =====================================================================
    private static final class AutoLeftScreen extends YjScreen {
       private final AutoLeftClient.Config cfg = copy();
       private KeybindButton keybind;
@@ -628,11 +589,11 @@ public final class ModGuiClient implements ClientModInitializer {
                this.dirty = false;
             }));
          y += YjTheme.ROW + 4;
-         this.addSlider(x, y, w, "Min CPS", 1, 40, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Minimum clicks per second.");
+         this.addSlider(x, y, w, "Min CPS", 1, 20, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
+         addHelp(x, y, w, YjTheme.CTRL_H, "Minimum clicks per second.", "Safe executable range: 1-20 CPS.");
          y += YjTheme.ROW + 2;
-         this.addSlider(x, y, w, "Max CPS", 1, 40, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum clicks per second.");
+         this.addSlider(x, y, w, "Max CPS", 1, 20, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
+         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum clicks per second.", "At most one synthetic click per game tick.");
          addActionBar(this::reset);
       }
 
@@ -737,11 +698,11 @@ public final class ModGuiClient implements ClientModInitializer {
                this.dirty = false;
             }));
          y += YjTheme.ROW + 4;
-         this.addSlider(x, y, w, "Min CPS", 1, 40, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Minimum blocks placed per second.");
+         this.addSlider(x, y, w, "Min CPS", 1, 20, this.cfg.minCps, true, v -> this.cfg.minCps = (int) Math.round(v));
+         addHelp(x, y, w, YjTheme.CTRL_H, "Minimum blocks placed per second.", "Safe executable range: 1-20 CPS.");
          y += YjTheme.ROW + 2;
-         this.addSlider(x, y, w, "Max CPS", 1, 40, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
-         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum blocks placed per second.");
+         this.addSlider(x, y, w, "Max CPS", 1, 20, this.cfg.maxCps, true, v -> this.cfg.maxCps = (int) Math.round(v));
+         addHelp(x, y, w, YjTheme.CTRL_H, "Maximum blocks placed per second.", "One vanilla use attempt per game tick maximum.");
          addActionBar(this::reset);
       }
 
@@ -1095,7 +1056,6 @@ public final class ModGuiClient implements ClientModInitializer {
       }
    }
 
-   /** Drag-to-place editor for the tracker HUD text. */
    private static final class TrackerHudEditorScreen extends YjScreen {
       private final TrackerClient.Config cfg;
       private boolean dragging;
