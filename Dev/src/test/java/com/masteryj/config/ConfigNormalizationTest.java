@@ -19,7 +19,7 @@ class ConfigNormalizationTest {
         left.cps = 999;
         left.normalize();
         assertEquals(9, left.configVersion);
-        assertEquals(40, left.cps);
+        assertEquals(20, left.cps);
 
         AutoRightClient.Config right = new AutoRightClient.Config();
         right.cps = -5;
@@ -42,9 +42,9 @@ class ConfigNormalizationTest {
         AutoRightClient.Config right = new AutoRightClient.Config();
         right.configVersion = 6;
         right.minCps = 7;
-        right.maxCps = 40;
+        right.maxCps = 20;
         right.normalize();
-        assertEquals(40, right.cps);
+        assertEquals(20, right.cps);
         assertNull(right.minCps);
         assertNull(right.maxCps);
     }

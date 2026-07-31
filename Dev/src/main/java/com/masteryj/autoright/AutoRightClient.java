@@ -7,6 +7,7 @@ import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
 import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
+import com.masteryj.core.ActionBudget;
 import com.masteryj.autoleft.AutoLeftClient;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -46,6 +47,15 @@ public final class AutoRightClient implements ClientModInitializer {
     private final LegacyMultiVersionPlacementPolicy placementPolicy =
             new LegacyMultiVersionPlacementPolicy();
     private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
+    private final ActionBudget budget = new ActionBudget();
+
+    // Release-click gap
+    private long lastReleaseNanos;
+    private static final long RELEASE_GAP_NANOS = 50_000_000L;
+
+    // TPS-drop
+    private long lastTickNanos;
+    private boolean tpsDropSilence;
 
     public static Config config;
     public static boolean enabled;
@@ -83,6 +93,7 @@ public final class AutoRightClient implements ClientModInitializer {
             physicalWasDown = physicalDown;
             restoreVanillaUse(client, physicalDown);
             clearRuntimeState();
+            budget.reset();
             return;
         }
 
@@ -92,6 +103,7 @@ public final class AutoRightClient implements ClientModInitializer {
             physicalWasDown = physicalDown;
             restoreVanillaUse(client, physicalDown);
             clearRuntimeState();
+            budget.reset();
             return;
         }
 
@@ -108,9 +120,32 @@ public final class AutoRightClient implements ClientModInitializer {
         }
 
         if (!physicalDown) {
+            lastReleaseNanos = System.nanoTime();
             physicalWasDown = false;
             restoreVanillaUse(client, false);
             clearPressState();
+            return;
+        }
+
+        // Release-click gap
+        if (System.nanoTime() - lastReleaseNanos < RELEASE_GAP_NANOS) {
+            physicalWasDown = true;
+            restoreVanillaUse(client, true);
+            return;
+        }
+
+        // TPS-drop silence
+        long nowNanos = System.nanoTime();
+        if (lastTickNanos != 0) {
+            long gap = nowNanos - lastTickNanos;
+            if (gap > 100_000_000L) tpsDropSilence = true;
+        }
+        lastTickNanos = nowNanos;
+        if (tpsDropSilence) {
+            tpsDropSilence = false;
+            physicalWasDown = true;
+            restoreVanillaUse(client, physicalDown);
+            clearRuntimeState();
             return;
         }
 
@@ -128,7 +163,6 @@ public final class AutoRightClient implements ClientModInitializer {
             physicalWasDown = true;
             restoreVanillaUse(client, true);
             placementPolicy.clearRuntimeState();
-            // The first real physical use stays fully vanilla.
             return;
         }
 
@@ -168,8 +202,13 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        // The queued binding is the sole follow-up owner. Vanilla still performs the actual use,
-        // sequence-id handling, prediction, collision checks and final placement decision.
+        // Budget gate
+        if (!budget.requestRight(nowNanos, false)) {
+            restoreVanillaUse(client, false);
+            placementPolicy.clearRuntimeState();
+            return;
+        }
+
         restoreVanillaUse(client, false);
         boolean validCandidate = client.crosshairTarget instanceof BlockHitResult;
         int pulses;
@@ -177,7 +216,7 @@ public final class AutoRightClient implements ClientModInitializer {
             pulses = placementPolicy.pulsesThisTick(
                     enabled, activeGameplay, physicalDown, validCandidate);
             if (pulses > 0) {
-                pulses = clickLimiter.acquire(System.nanoTime(), cps, true);
+                pulses = clickLimiter.acquire(nowNanos, cps, true);
             }
         } else {
             pulses = placementPolicy.pulsesThisTick(cps,

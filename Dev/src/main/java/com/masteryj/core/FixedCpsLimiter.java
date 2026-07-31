@@ -8,7 +8,7 @@ package com.masteryj.core;
  */
 public final class FixedCpsLimiter {
 
-    public static final int MAX_CPS = 40;
+    public static final int MAX_CPS = 20;
     private static final long SECOND_NANOS = 1_000_000_000L;
 
     private long nextActionAtNanos = Long.MIN_VALUE;

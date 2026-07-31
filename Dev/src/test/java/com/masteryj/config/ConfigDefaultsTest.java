@@ -52,7 +52,7 @@ class ConfigDefaultsTest {
         AutoLeftClient.Config leftA = RecommendedProfiles.autoLeft();
         AutoLeftClient.Config leftB = RecommendedProfiles.autoLeft();
         assertNotSame(leftA, leftB);
-        leftA.cps = 40;
+        leftA.cps = 20;
         assertEquals(12, leftB.cps);
 
         AutoRightClient.Config rightA = RecommendedProfiles.autoRight();

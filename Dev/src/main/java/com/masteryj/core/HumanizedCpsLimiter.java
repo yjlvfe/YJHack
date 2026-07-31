@@ -13,7 +13,7 @@ import java.util.random.RandomGeneratorFactory;
  */
 public final class HumanizedCpsLimiter {
 
-    public static final int MAX_CPS = 40;
+    public static final int MAX_CPS = 20;
 
     private static final double JITTER_INTERCEPT = 5.0;
     private static final double JITTER_SLOPE = 0.5;

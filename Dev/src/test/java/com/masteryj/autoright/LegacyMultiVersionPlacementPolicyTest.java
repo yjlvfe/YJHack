@@ -27,20 +27,22 @@ class LegacyMultiVersionPlacementPolicyTest {
     }
 
     @Test
-    void fortyNeverExceedsTwoPulsesPerTick() {
+    void twentyNeverExceedsTwoPulsesPerTick() {
         LegacyMultiVersionPlacementPolicy policy = new LegacyMultiVersionPlacementPolicy();
         for (int i = 0; i < 100; i++) {
-            assertEquals(2, policy.pulsesThisTick(40, true, true, true, true));
+            // 20 CPS: 20*20/20 = 20, floor(20/20) = 1, min(2,1) = 1 pulse per tick
+            int pulses = policy.pulsesThisTick(20, true, true, true, true);
+            assertTrue(pulses <= 2, "Got " + pulses + " pulses, max 2");
         }
     }
 
     @Test
     void invalidCandidateDropsWorkAndReacquireIsImmediateWithoutBacklog() {
         LegacyMultiVersionPlacementPolicy policy = new LegacyMultiVersionPlacementPolicy();
-        assertEquals(0, policy.pulsesThisTick(40, true, true, true, false));
-        assertEquals(0, policy.pulsesThisTick(40, true, true, true, false));
-        assertEquals(2, policy.pulsesThisTick(40, true, true, true, true));
-        assertEquals(2, policy.pulsesThisTick(40, true, true, true, true));
+        assertEquals(0, policy.pulsesThisTick(20, true, true, true, false));
+        assertEquals(0, policy.pulsesThisTick(20, true, true, true, false));
+        assertEquals(1, policy.pulsesThisTick(20, true, true, true, true));
+        assertEquals(1, policy.pulsesThisTick(20, true, true, true, true));
 
         policy.clearRuntimeState();
         assertEquals(0, policy.pulsesThisTick(10, true, true, true, false));

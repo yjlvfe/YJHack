@@ -7,6 +7,7 @@ import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
 import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
+import com.masteryj.core.ActionBudget;
 import com.masteryj.mixin.MinecraftClientInvoker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.rendering.v1.HudLayerRegistrationCallback;
@@ -44,6 +45,15 @@ public final class AutoLeftClient implements ClientModInitializer {
 
     private final LegacyMultiVersionCombatPolicy combatPolicy = new LegacyMultiVersionCombatPolicy();
     private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
+    private final ActionBudget budget = new ActionBudget();
+
+    // Release-click gap: skip first tick after re-press
+    private long lastReleaseNanos;
+    private static final long RELEASE_GAP_NANOS = 50_000_000L; // 1 tick
+
+    // TPS-drop detection
+    private long lastFrameNanos;
+    private boolean tpsDropSilence;
 
     // CPS tracking for HUD display
     private static final CpsTracker leftCpsTracker = new CpsTracker();
@@ -92,6 +102,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             physicalWasDown = physicalDown;
             restoreVanillaAttack(client, physicalDown);
             clearRuntimeState();
+            budget.reset();
             return;
         }
 
@@ -101,6 +112,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             physicalWasDown = physicalDown;
             restoreVanillaAttack(client, physicalDown);
             clearRuntimeState();
+            budget.reset();
             return;
         }
 
@@ -117,6 +129,7 @@ public final class AutoLeftClient implements ClientModInitializer {
         }
 
         if (!physicalDown) {
+            lastReleaseNanos = System.nanoTime();
             physicalWasDown = false;
             restoreVanillaAttack(client, false);
             clearRuntimeState();
@@ -127,7 +140,6 @@ public final class AutoLeftClient implements ClientModInitializer {
         boolean entityTargeted = client.crosshairTarget instanceof EntityHitResult;
 
         if (rising) {
-            // The real press is not synthesized or duplicated. It follows the normal client path.
             restoreVanillaAttack(client, true);
             clearRuntimeState();
             if (entityTargeted) {
@@ -137,30 +149,54 @@ public final class AutoLeftClient implements ClientModInitializer {
             return;
         }
 
-        if (!shouldRunDirectAttack(enabled, activeGameplay, physicalDown, entityTargeted)) {
-            // Mining and empty-space holds remain vanilla. No artificial miss packets are created.
+        // Release-click gap: skip first tick after re-press
+        if (System.nanoTime() - lastReleaseNanos < RELEASE_GAP_NANOS) {
+            restoreVanillaAttack(client, true);
+            return;
+        }
+
+        // TPS-drop silence: skip actions when frame gap > 100ms
+        long nowNanos = System.nanoTime();
+        if (lastFrameNanos != 0) {
+            long gap = nowNanos - lastFrameNanos;
+            if (gap > 100_000_000L) {
+                tpsDropSilence = true;
+            }
+        }
+        lastFrameNanos = nowNanos;
+        if (tpsDropSilence) {
+            tpsDropSilence = false;
             restoreVanillaAttack(client, true);
             clearRuntimeState();
             return;
         }
 
-        // There is one follow-up owner only: vanilla held-repeat is suppressed while the policy
-        // invokes Minecraft's own doAttack(). The physical state is read separately from GLFW.
+        if (!shouldRunDirectAttack(enabled, activeGameplay, physicalDown, entityTargeted)) {
+            restoreVanillaAttack(client, true);
+            clearRuntimeState();
+            return;
+        }
+
+        // Action budget gate
+        if (!budget.requestLeft(nowNanos, false)) {
+            restoreVanillaAttack(client, true);
+            return;
+        }
+
         restoreVanillaAttack(client, false);
         boolean shouldFire;
         if (jitterEnabled) {
             shouldFire = combatPolicy.shouldEmitFollowUp(
                     enabled, activeGameplay, physicalDown, entityTargeted);
-            int pulses = clickLimiter.acquire(System.nanoTime(), cps, true);
+            int pulses = clickLimiter.acquire(nowNanos, cps, true);
             if (shouldFire && pulses > 0) {
                 for (int i = 0; i < pulses; i++) {
                     ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
                     leftCpsTracker.recordClick();
                 }
             }
-            return;
         } else {
-            shouldFire = combatPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
+            shouldFire = combatPolicy.shouldEmitFollowUp(nowNanos, cps,
                     enabled, activeGameplay, physicalDown, entityTargeted);
             if (shouldFire) {
                 ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
