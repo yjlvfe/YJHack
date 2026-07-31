@@ -1,8 +1,8 @@
 package com.masteryj.config;
 
 /**
- * Conservative, documented defaults for a modern 1.21.5 client connected to a legacy-style
- * 1.8.9 combat server through a protocol translation layer.
+ * Documented defaults for a modern 1.21.5 client connected to a legacy-style 1.8.9 combat server
+ * through a protocol translation layer.
  *
  * <p>These values are attempt/input defaults, not promises about server-accepted attacks,
  * damage, knockback, or placed blocks. The server, its tick loop, latency, plugins, and
@@ -11,7 +11,8 @@ package com.masteryj.config;
 public final class RecommendedSettings {
 
     public static final int AUTO_LEFT_CPS = 12;
-    public static final int AUTO_RIGHT_CPS = 10;
+    /** Matches the responsive effective cadence of the original 14-28 range without min/max. */
+    public static final int AUTO_RIGHT_CPS = 20;
 
     public static final int NINJA_SWITCH_DELAY_MS = 120;
     public static final boolean NINJA_AUTO_SWITCH = true;
