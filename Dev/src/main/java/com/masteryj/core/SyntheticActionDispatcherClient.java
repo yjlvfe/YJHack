@@ -5,11 +5,12 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.world.World;
 
 /**
- * Flushes AutoLeft/AutoRight requests once at the end of each real client tick.
+ * Queues synthetic key presses immediately before vanilla's client tick handles input.
  *
- * <p>Running after vanilla input handling avoids racing Minecraft's own attack/use processing.
- * Requests are still submitted for the following tick, guards are re-checked immediately before
- * emission, and stale work is dropped rather than replayed.
+ * <p>AutoLeft and AutoRight submit work at END_CLIENT_TICK. The following
+ * START_CLIENT_TICK validates the latest gameplay state and places at most one press per module in
+ * Minecraft's own KeyBinding queue. Vanilla then performs the actual attack/use interaction,
+ * preserving normal cooldowns, sequence handling, server packets, and prediction reconciliation.
  */
 public final class SyntheticActionDispatcherClient implements ClientModInitializer {
 
@@ -17,7 +18,7 @@ public final class SyntheticActionDispatcherClient implements ClientModInitializ
 
     @Override
     public void onInitializeClient() {
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+        ClientTickEvents.START_CLIENT_TICK.register(client -> {
             if (client.world != lastWorld) {
                 lastWorld = client.world;
                 ActionBudget.INSTANCE.resetAll();
@@ -26,7 +27,7 @@ public final class SyntheticActionDispatcherClient implements ClientModInitializ
                 ActionBudget.INSTANCE.resetAll();
                 return;
             }
-            ActionBudget.INSTANCE.flush(client, System.nanoTime());
+            ActionBudget.INSTANCE.flush(System.nanoTime());
         });
     }
 }
