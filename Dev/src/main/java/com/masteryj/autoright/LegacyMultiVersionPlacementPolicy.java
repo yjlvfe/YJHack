@@ -3,35 +3,54 @@ package com.masteryj.autoright;
 import com.masteryj.core.FixedCpsLimiter;
 
 /**
- * Fixed-rate block-use attempt policy for protocol-translated legacy servers.
+ * Fixed single-value CPS cadence for held block use.
  *
- * <p>Vanilla remains responsible for interaction packets, sequence ids, prediction, collision,
- * and the final placement decision. This policy only decides whether a single follow-up call may
- * reach vanilla; it owns no packet queue and performs no catch-up after stalls.
+ * <p>The cadence advances once per client tick, never from elapsed wall time. A missing or stalled
+ * tick therefore drops work instead of replaying a backlog. Values from 1-20 produce at most one
+ * pulse per tick; 21-40 can produce a second pulse, with an absolute ceiling of two.
+ *
+ * <p>Candidate loss drops the due pulse. Reacquiring a block face is allowed one immediate pulse so
+ * movement at an edge does not feel like the click was eaten. This is an edge response, not catch-up.
  */
 public final class LegacyMultiVersionPlacementPolicy {
 
-    private final FixedCpsLimiter limiter = new FixedCpsLimiter();
+    static final int TICKS_PER_SECOND = 20;
+    static final int MAX_PULSES_PER_TICK = 2;
 
-    public boolean shouldEmitFollowUp(long nowNanos,
-                                      int cps,
-                                      boolean enabled,
-                                      boolean activeGameplay,
-                                      boolean physicalUseDown,
-                                      boolean validPlacementCandidate) {
-        if (!enabled || !activeGameplay || !physicalUseDown || !validPlacementCandidate) {
+    private int phase;
+    private boolean candidateWasValid;
+
+    public int pulsesThisTick(int configuredCps,
+                              boolean enabled,
+                              boolean activeGameplay,
+                              boolean physicalUseDown,
+                              boolean validPlacementCandidate) {
+        if (!enabled || !activeGameplay || !physicalUseDown) {
             clearRuntimeState();
-            return false;
+            return 0;
         }
-        return limiter.acquire(nowNanos, cps);
+
+        int cps = FixedCpsLimiter.clampCps(configuredCps);
+        phase += cps;
+        int pulses = Math.min(MAX_PULSES_PER_TICK, phase / TICKS_PER_SECOND);
+        phase %= TICKS_PER_SECOND;
+
+        if (!validPlacementCandidate) {
+            candidateWasValid = false;
+            return 0;
+        }
+
+        if (!candidateWasValid && pulses == 0) {
+            pulses = 1;
+            phase = 0;
+        }
+        candidateWasValid = true;
+        return pulses;
     }
 
     public void clearRuntimeState() {
-        limiter.clearTimingState();
-    }
-
-    public void discardOverduePulse() {
-        limiter.clearTimingState();
+        phase = 0;
+        candidateWasValid = false;
     }
 
     /** A held block placement may continue only when both the old and new item are blocks. */
