@@ -14,18 +14,14 @@ import org.junit.jupiter.api.Test;
 class ConfigDefaultsTest {
 
     @Test
-    void resetDefaultsAreDisabledAndBalanced() {
+    void resetDefaultsAreSimpleDisabledAndBalanced() {
         AutoLeftClient.Config left = new AutoLeftClient.Config();
         assertFalse(left.enabled);
-        assertTrue(left.weaponCheck);
-        assertEquals(8, left.minCps);
-        assertEquals(10, left.maxCps);
+        assertEquals(10, left.cps);
 
         AutoRightClient.Config right = new AutoRightClient.Config();
         assertFalse(right.enabled);
-        assertTrue(right.blockMode);
-        assertEquals(8, right.minCps);
-        assertEquals(10, right.maxCps);
+        assertEquals(10, right.cps);
 
         NinjaBridgeClient.Config bridge = new NinjaBridgeClient.Config();
         assertFalse(bridge.enabled);
