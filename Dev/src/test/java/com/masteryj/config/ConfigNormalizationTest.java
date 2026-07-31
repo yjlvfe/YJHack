@@ -1,8 +1,8 @@
 package com.masteryj.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.masteryj.aimassist.AimAssistClient;
 import com.masteryj.autoleft.AutoLeftClient;
@@ -18,13 +18,13 @@ class ConfigNormalizationTest {
         AutoLeftClient.Config left = new AutoLeftClient.Config();
         left.cps = 999;
         left.normalize();
-        assertEquals(7, left.configVersion);
+        assertEquals(8, left.configVersion);
         assertEquals(40, left.cps);
 
         AutoRightClient.Config right = new AutoRightClient.Config();
         right.cps = -5;
         right.normalize();
-        assertEquals(7, right.configVersion);
+        assertEquals(8, right.configVersion);
         assertEquals(1, right.cps);
     }
 
@@ -50,16 +50,20 @@ class ConfigNormalizationTest {
     }
 
     @Test
-    void aimAssistSanitisesInvalidFloats() {
+    void aimAssistSanitisesFloatsAndHardClampsRangeAndLos() {
         AimAssistClient.Config cfg = new AimAssistClient.Config();
         cfg.speed = Float.NaN;
         cfg.smoothness = 5.0F;
         cfg.fov = 1.0F;
+        cfg.range = 999.0D;
+        cfg.lineOfSight = false;
         cfg.normalize();
-        assertEquals(9, cfg.configVersion);
-        assertEquals(0.28F, cfg.speed, 1.0E-6F);
+        assertEquals(10, cfg.configVersion);
+        assertEquals(0.22F, cfg.speed, 1.0E-6F);
         assertEquals(1.0F, cfg.smoothness, 1.0E-6F);
         assertEquals(10.0F, cfg.fov, 1.0E-6F);
+        assertEquals(3.5D, cfg.range, 1.0E-6D);
+        assertTrue(cfg.lineOfSight);
     }
 
     @Test
@@ -71,11 +75,13 @@ class ConfigNormalizationTest {
     }
 
     @Test
-    void ninjaMigrationNeverEnablesAutoSwitch() {
+    void ninjaRecommendedMigrationUsesConservativeSlotDelay() {
         NinjaBridgeClient.Config cfg = new NinjaBridgeClient.Config();
         cfg.configVersion = 1;
+        cfg.switchDelayMs = -50;
         cfg.norm();
-        assertEquals(9, cfg.configVersion);
-        assertFalse(cfg.autoSwitch);
+        assertEquals(10, cfg.configVersion);
+        assertTrue(cfg.autoSwitch);
+        assertEquals(50, cfg.switchDelayMs);
     }
 }
