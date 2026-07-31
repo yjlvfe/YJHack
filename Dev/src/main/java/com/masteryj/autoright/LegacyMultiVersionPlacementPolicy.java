@@ -27,11 +27,11 @@ public final class LegacyMultiVersionPlacementPolicy {
     }
 
     public void clearRuntimeState() {
-        limiter.reset();
+        limiter.clearTimingState();
     }
 
     public void discardOverduePulse() {
-        limiter.reset();
+        limiter.clearTimingState();
     }
 
     /** A held block placement may continue only when both the old and new item are blocks. */
