@@ -1,32 +1,24 @@
 package com.masteryj.core;
 
-import com.masteryj.mixin.MinecraftClientInvoker;
-import net.minecraft.client.MinecraftClient;
-
 import java.util.Arrays;
 import java.util.function.BooleanSupplier;
 
 /**
- * Global fair budget for synthetic AutoLeft and AutoRight actions.
+ * Independent, tick-safe budgets for synthetic AutoLeft and AutoRight input events.
  *
- * <p>Modules submit requests late in a client tick. The dispatcher flushes previously submitted
- * work at END_CLIENT_TICK after vanilla input handling, and newly submitted requests remain for the
- * following tick. Guards are checked immediately before emission so queued actions cannot survive
- * menus, focus changes, releases, slot changes, or world transitions.
+ * <p>Each module may enqueue at most one synthetic input event per client tick and at most twenty
+ * events in its own rolling one-second window. The modules never borrow quota from one another,
+ * so holding both buttons cannot starve either side. Denied work is dropped immediately and is
+ * never replayed after lag, a menu, a world transition, or a later release.
  *
- * <p>The contract is global, not per-module:
- * <ul>
- *   <li>at most two synthetic actions total in one client tick;</li>
- *   <li>at most forty synthetic actions total in any sliding one-second window;</li>
- *   <li>when both modules request actions, each receives one before either receives a second;</li>
- *   <li>denied actions are dropped and are never replayed later.</li>
- * </ul>
- * Real vanilla input never enters this budget.
+ * <p>Runtime emitters enqueue the player's configured Minecraft key binding. The dispatcher runs
+ * at START_CLIENT_TICK, before vanilla consumes key presses, so Minecraft remains authoritative for
+ * attack/use cooldowns, interaction sequencing, prediction, and packets.
  */
 public final class ActionBudget {
 
-    public static final int MAX_PER_TICK_GLOBAL = 2;
-    public static final int MAX_PER_SECOND_GLOBAL = 40;
+    public static final int MAX_PER_TICK_PER_MODULE = 1;
+    public static final int MAX_PER_SECOND_PER_MODULE = 20;
     private static final long WINDOW_NANOS = 1_000_000_000L;
 
     public enum Module { LEFT, RIGHT }
@@ -39,137 +31,103 @@ public final class ActionBudget {
     private final Runnable[] emitters = new Runnable[MODULES];
     private final long[] dropped = new long[MODULES];
 
-    private final long[] recent = new long[MAX_PER_SECOND_GLOBAL];
-    private int recentCount;
-    private int recentHead;
-    private int preferredModule;
-    private int maxInOneTick;
+    private final long[][] recent = new long[MODULES][MAX_PER_SECOND_PER_MODULE];
+    private final int[] recentCount = new int[MODULES];
+    private final int[] recentHead = new int[MODULES];
+    private final int[] maxPerModuleInOneTick = new int[MODULES];
+    private int maxGlobalInOneTick;
 
     /**
-     * Submit up to two actions for the next dispatcher flush. Repeated submissions from the same
-     * module are combined but still capped at two. The guard is re-checked immediately before
-     * emission so a release, slot change, menu, focus loss, or world change cancels stale work.
+     * Submit synthetic input for the next START_CLIENT_TICK flush.
+     *
+     * <p>Only one event can exist for a module in a tick. Duplicate or excessive submissions are
+     * rejected immediately instead of becoming backlog.
      */
     public void request(Module module, int pulses, BooleanSupplier guard, Runnable emitter) {
         if (module == null || pulses <= 0 || guard == null || emitter == null) return;
         int m = module.ordinal();
-        requested[m] = Math.min(MAX_PER_TICK_GLOBAL, requested[m] + pulses);
-        guards[m] = guard;
-        emitters[m] = emitter;
+        int accepted = requested[m] == 0 ? 1 : 0;
+        int rejected = pulses - accepted;
+
+        if (accepted == 1) {
+            requested[m] = 1;
+            guards[m] = guard;
+            emitters[m] = emitter;
+            notifyRequested(module, 1);
+        }
+        if (rejected > 0) {
+            dropped[m] += rejected;
+            notifyBudgetRejected(module, rejected);
+        }
     }
 
-    /** Cancel pending work for one module without clearing the global rolling-rate history. */
+    /** Cancel pending work while preserving the rolling rate history. */
     public void cancel(Module module) {
         if (module == null) return;
         clearPending(module.ordinal());
     }
 
     /**
-     * Test-compatible flush which uses the supplied emitter callback. Runtime code should call
-     * {@link #flush(MinecraftClient, long)} so the exact vanilla click methods are invoked.
+     * Clear one module's pending work, rolling history, and diagnostics state. Use this for a real
+     * gameplay-session gate such as disable, disconnect, death, focus loss, or world change.
      */
+    public void reset(Module module) {
+        if (module == null) return;
+        int m = module.ordinal();
+        clearPending(m);
+        Arrays.fill(recent[m], 0L);
+        recentCount[m] = 0;
+        recentHead[m] = 0;
+        dropped[m] = 0L;
+        maxPerModuleInOneTick[m] = 0;
+        maxGlobalInOneTick = Math.max(maxPerModuleInOneTick[0], maxPerModuleInOneTick[1]);
+    }
+
+    /** Flush queued input before vanilla's client-tick input handling. */
     public void flush(long nowNanos) {
-        flushInternal(null, nowNanos);
-    }
-
-    /**
-     * Flush one real client tick using Minecraft's own private attack/use methods. Calling the
-     * vanilla methods directly avoids the old KeyBinding queue race that could swallow a held
-     * left or right click before Minecraft consumed it.
-     */
-    public void flush(MinecraftClient client, long nowNanos) {
-        flushInternal(client, nowNanos);
-    }
-
-    private void flushInternal(MinecraftClient client, long nowNanos) {
-        boolean[] valid = new boolean[MODULES];
+        int emittedGlobal = 0;
         for (int m = 0; m < MODULES; m++) {
             if (requested[m] <= 0) continue;
-            valid[m] = guards[m] != null && guards[m].getAsBoolean();
-            if (!valid[m]) {
-                notifyGateRejected(Module.values()[m], requested[m]);
-                dropped[m] += requested[m];
-                requested[m] = 0;
-            }
-        }
-
-        int availableThisSecond = Math.max(0,
-                MAX_PER_SECOND_GLOBAL - countWithinWindow(nowNanos));
-        int remaining = Math.min(MAX_PER_TICK_GLOBAL, availableThisSecond);
-        int[] granted = new int[MODULES];
-
-        int first = preferredModule;
-        int second = 1 - first;
-        preferredModule = second;
-
-        // Fair first pass: one action per requesting module.
-        remaining = grantOne(first, valid, granted, remaining);
-        remaining = grantOne(second, valid, granted, remaining);
-
-        // If only one module requested, it may use the remaining global slot.
-        while (remaining > 0) {
-            int before = remaining;
-            remaining = grantOne(first, valid, granted, remaining);
-            if (remaining > 0) remaining = grantOne(second, valid, granted, remaining);
-            if (remaining == before) break;
-        }
-
-        int emittedThisTick = 0;
-        for (int m = 0; m < MODULES; m++) {
-            int deniedByBudget = requested[m] - granted[m];
-            if (deniedByBudget > 0) {
-                dropped[m] += deniedByBudget;
-                notifyBudgetRejected(Module.values()[m], deniedByBudget);
-            }
 
             Module module = Module.values()[m];
-            Runnable emitter = emitters[m];
-            for (int i = 0; i < granted[m]; i++) {
-                if (client == null) {
-                    emitter.run();
-                } else {
-                    emitVanillaAction(client, module);
-                }
-                record(nowNanos);
-                emittedThisTick++;
+            boolean valid = guards[m] != null && guards[m].getAsBoolean();
+            if (!valid) {
+                dropped[m] += requested[m];
+                notifyGateRejected(module, requested[m]);
+                clearPending(m);
+                continue;
             }
-            notifyTickPulses(module, granted[m]);
+
+            int emitted = 0;
+            if (countWithinWindow(m, nowNanos) < MAX_PER_SECOND_PER_MODULE) {
+                emitters[m].run();
+                record(m, nowNanos);
+                emitted = 1;
+                emittedGlobal++;
+            } else {
+                dropped[m] += requested[m];
+                notifyBudgetRejected(module, requested[m]);
+            }
+
+            notifyTickPulses(module, emitted);
+            maxPerModuleInOneTick[m] = Math.max(maxPerModuleInOneTick[m], emitted);
             clearPending(m);
         }
-        maxInOneTick = Math.max(maxInOneTick, emittedThisTick);
+        maxGlobalInOneTick = Math.max(maxGlobalInOneTick, emittedGlobal);
     }
 
-    private void emitVanillaAction(MinecraftClient client, Module module) {
-        MinecraftClientInvoker invoker = (MinecraftClientInvoker) client;
-        if (module == Module.LEFT) {
-            invoker.yjhack$invokeDoAttack();
-            DebugStats.onAutoLeftPulse();
-        } else {
-            invoker.yjhack$invokeDoItemUse();
-            DebugStats.onAutoRightBlockPulse();
-        }
-    }
-
-    private int grantOne(int module, boolean[] valid, int[] granted, int remaining) {
-        if (remaining <= 0 || !valid[module] || granted[module] >= requested[module]) {
-            return remaining;
-        }
-        granted[module]++;
-        return remaining - 1;
-    }
-
-    private int countWithinWindow(long nowNanos) {
+    private int countWithinWindow(int module, long nowNanos) {
         int count = 0;
-        for (int i = 0; i < recentCount; i++) {
-            if (nowNanos - recent[i] < WINDOW_NANOS) count++;
+        for (int i = 0; i < recentCount[module]; i++) {
+            if (nowNanos - recent[module][i] < WINDOW_NANOS) count++;
         }
         return count;
     }
 
-    private void record(long nowNanos) {
-        recent[recentHead] = nowNanos;
-        recentHead = (recentHead + 1) % MAX_PER_SECOND_GLOBAL;
-        if (recentCount < MAX_PER_SECOND_GLOBAL) recentCount++;
+    private void record(int module, long nowNanos) {
+        recent[module][recentHead[module]] = nowNanos;
+        recentHead[module] = (recentHead[module] + 1) % MAX_PER_SECOND_PER_MODULE;
+        if (recentCount[module] < MAX_PER_SECOND_PER_MODULE) recentCount[module]++;
     }
 
     private void clearPending(int module) {
@@ -178,15 +136,17 @@ public final class ActionBudget {
         emitters[module] = null;
     }
 
-    /** Clear pending requests, rate history, and fairness state on a gameplay-session reset. */
+    /** Clear all gameplay-session state. */
     public void resetAll() {
         Arrays.fill(requested, 0);
         Arrays.fill(guards, null);
         Arrays.fill(emitters, null);
-        Arrays.fill(recent, 0L);
-        recentCount = 0;
-        recentHead = 0;
-        preferredModule = 0;
+        Arrays.fill(dropped, 0L);
+        Arrays.fill(recentCount, 0);
+        Arrays.fill(recentHead, 0);
+        Arrays.fill(maxPerModuleInOneTick, 0);
+        for (long[] moduleHistory : recent) Arrays.fill(moduleHistory, 0L);
+        maxGlobalInOneTick = 0;
     }
 
     public long dropped(Module module) {
@@ -197,8 +157,17 @@ public final class ActionBudget {
         return dropped[0] + dropped[1];
     }
 
+    public int maxInOneTick(Module module) {
+        return maxPerModuleInOneTick[module.ordinal()];
+    }
+
     public int maxInOneTick() {
-        return maxInOneTick;
+        return maxGlobalInOneTick;
+    }
+
+    private static void notifyRequested(Module module, int count) {
+        if (module == Module.LEFT) DebugStats.onAutoLeftRequested(count);
+        else DebugStats.onAutoRightRequested(count);
     }
 
     private static void notifyBudgetRejected(Module module, int count) {
