@@ -17,6 +17,7 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       jar_name: ${{ steps.meta.outputs.jar_name }}
+      release_jar_name: ${{ steps.meta.outputs.release_jar_name }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
     steps:
       - name: Checkout
@@ -34,6 +35,7 @@ jobs:
           jar_name="YJHack-${version}-mc1.21.5.jar"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "jar_name=$jar_name" >> "$GITHUB_OUTPUT"
+          echo "release_jar_name=YJHack.jar" >> "$GITHUB_OUTPUT"
           echo "artifact_name=YJHack-${version}-mc1.21.5" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java 21
@@ -129,12 +131,20 @@ jobs:
           name: ${{ needs.build.outputs.artifact_name }}
           path: release-assets
 
+      - name: Prepare short release filename
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv \
+            "release-assets/${{ needs.build.outputs.jar_name }}" \
+            "release-assets/${{ needs.build.outputs.release_jar_name }}"
+
       - name: Generate SHA256SUMS.txt
         shell: bash
         working-directory: release-assets
         run: |
           set -euo pipefail
-          sha256sum "${{ needs.build.outputs.jar_name }}" > SHA256SUMS.txt
+          sha256sum "${{ needs.build.outputs.release_jar_name }}" > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
 
       - name: Create tag and publish release
@@ -142,7 +152,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
-          JAR_NAME: ${{ needs.build.outputs.jar_name }}
+          JAR_NAME: ${{ needs.build.outputs.release_jar_name }}
+          OLD_JAR_NAME: ${{ needs.build.outputs.jar_name }}
           RELEASE_TARGET: ${{ github.sha }}
         shell: bash
         run: |
@@ -155,6 +166,8 @@ jobs:
           fi
 
           if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release delete-asset "$tag" "$OLD_JAR_NAME" \
+              --repo "$GH_REPO" --yes >/dev/null 2>&1 || true
             gh release upload "$tag" \
               "release-assets/${JAR_NAME}" \
               release-assets/SHA256SUMS.txt \
@@ -175,7 +188,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
-          JAR_NAME: ${{ needs.build.outputs.jar_name }}
+          JAR_NAME: ${{ needs.build.outputs.release_jar_name }}
         shell: bash
         run: |
           set -euo pipefail
