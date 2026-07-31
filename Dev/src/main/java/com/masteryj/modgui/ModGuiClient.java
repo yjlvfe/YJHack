@@ -517,6 +517,11 @@ public final class ModGuiClient implements ClientModInitializer {
                     : AutoLeftClient.config.copy();
         }
 
+        @Override
+        protected int winH() {
+            return Math.max(420, Math.min(530, height - 20));
+        }
+
         @Override protected String navId() { return "autoleft"; }
         @Override protected String headerStatus() { return cfg.enabled ? "ENABLED" : "DISABLED"; }
         @Override protected void applyLive() { AutoLeftClient.applyRuntimeConfig(cfg); }
@@ -543,6 +548,17 @@ public final class ModGuiClient implements ClientModInitializer {
                 cfg.jitterEnabled = value;
                 saveNow();
             }));
+            addDrawableChild(new HudPositionEditor(x, y + 126, w, 76,
+                    () -> AutoLeftClient.cpsHudX, () -> AutoLeftClient.cpsHudY,
+                    (newX, newY) -> {
+                        AutoLeftClient.cpsHudX = newX;
+                        AutoLeftClient.cpsHudY = newY;
+                        markEdited();
+                    }));
+            addSlider(x, y + 210, w, "HUD X", 4, 1000, AutoLeftClient.cpsHudX, true,
+                    value -> AutoLeftClient.cpsHudX = (int) Math.round(value));
+            addSlider(x, y + 240, w, "HUD Y", 4, 1000, AutoLeftClient.cpsHudY, true,
+                    value -> AutoLeftClient.cpsHudY = (int) Math.round(value));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.autoLeft()));
             addHelp(x, y + 66, w, 22,
                     "Attempt rate: 1–40 CPS.",

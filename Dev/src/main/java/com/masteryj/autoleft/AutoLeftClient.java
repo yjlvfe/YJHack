@@ -9,12 +9,17 @@ import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
 import com.masteryj.mixin.MinecraftClientInvoker;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.rendering.v1.HudLayerRegistrationCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.IdentifiedLayer;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.world.World;
 import org.lwjgl.glfw.GLFW;
@@ -35,9 +40,18 @@ public final class AutoLeftClient implements ClientModInitializer {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoleft.json");
     private static final int CURRENT_CONFIG_VERSION = 9;
+    private static final Identifier CPS_HUD_LAYER_ID = Identifier.of("yjhack", "cps_hud");
 
     private final LegacyMultiVersionCombatPolicy combatPolicy = new LegacyMultiVersionCombatPolicy();
     private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
+
+    // CPS tracking for HUD display
+    private static final CpsTracker leftCpsTracker = new CpsTracker();
+    public static final CpsTracker rightCpsTracker = new CpsTracker();
+    public static int leftCps;
+    public static int rightCps;
+    public static int cpsHudX = 8;
+    public static int cpsHudY = 20;
 
     public static Config config;
     public static boolean enabled;
@@ -55,10 +69,19 @@ public final class AutoLeftClient implements ClientModInitializer {
         config = loadConfig();
         applyRuntimeConfig(config);
         WorldRenderEvents.END.register(context -> frame(MinecraftClient.getInstance()));
+        HudLayerRegistrationCallback.EVENT.register(layeredDrawer ->
+                layeredDrawer.attachLayerAfter(
+                        IdentifiedLayer.MISC_OVERLAYS,
+                        CPS_HUD_LAYER_ID,
+                        this::renderCpsHud));
     }
 
     private void frame(MinecraftClient client) {
         handleToggleKey(client);
+
+        // Update CPS counts for HUD display
+        leftCps = leftCpsTracker.currentCps();
+        rightCps = rightCpsTracker.currentCps();
 
         boolean physicalDown = isAttackDown(client);
         boolean rising = physicalDown && !physicalWasDown;
@@ -128,6 +151,7 @@ public final class AutoLeftClient implements ClientModInitializer {
                 enabled, activeGameplay, physicalDown, entityTargeted)
                 && clickLimiter.acquire(System.nanoTime(), cps, jitterEnabled)) {
             ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+            leftCpsTracker.recordClick();
         }
     }
 
@@ -300,5 +324,44 @@ public final class AutoLeftClient implements ClientModInitializer {
         long handle = client.getWindow().getHandle();
         if (key >= 1000) return GLFW.glfwGetMouseButton(handle, key - 1000) == GLFW.GLFW_PRESS;
         return GLFW.glfwGetKey(handle, key) == GLFW.GLFW_PRESS;
+    }
+
+    // ── CPS HUD ──────────────────────────────────────────────────────
+
+    private void renderCpsHud(DrawContext context, RenderTickCounter tickCounter) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null || client.options.hudHidden) return;
+
+        String text = "L:" + leftCps + " R:" + rightCps;
+        int textWidth = client.textRenderer.getWidth(text);
+        int sw = context.getScaledWindowWidth();
+        int sh = context.getScaledWindowHeight();
+        int maxX = Math.max(4, sw - textWidth - 4);
+        int maxY = Math.max(4, sh - 12);
+        int x = Math.max(4, Math.min(maxX, cpsHudX));
+        int y = Math.max(4, Math.min(maxY, cpsHudY));
+
+        context.fill(x - 4, y - 2, x + textWidth + 4, y + 10, -1879048192);
+        context.drawTextWithShadow(client.textRenderer, text, x, y, 0xFF55FF55);
+    }
+
+    /** Tracks clicks and returns CPS over the last second. */
+    public static final class CpsTracker {
+        private final long[] timestamps = new long[120];
+        private int idx;
+
+        public void recordClick() {
+            timestamps[idx % timestamps.length] = System.nanoTime();
+            idx++;
+        }
+
+        public int currentCps() {
+            long cutoff = System.nanoTime() - 1_000_000_000L;
+            int count = 0;
+            for (int i = 0; i < timestamps.length; i++) {
+                if (timestamps[i] > cutoff) count++;
+            }
+            return count;
+        }
     }
 }

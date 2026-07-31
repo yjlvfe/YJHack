@@ -7,6 +7,7 @@ import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
 import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
+import com.masteryj.autoleft.AutoLeftClient;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -178,6 +179,7 @@ public final class AutoRightClient implements ClientModInitializer {
         }
         for (int i = 0; i < pulses; i++) {
             if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;
+            AutoLeftClient.rightCpsTracker.recordClick();
         }
     }
 
