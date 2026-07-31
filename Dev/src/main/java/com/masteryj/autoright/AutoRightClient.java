@@ -47,7 +47,6 @@ public final class AutoRightClient implements ClientModInitializer {
     private final LegacyMultiVersionPlacementPolicy placementPolicy =
             new LegacyMultiVersionPlacementPolicy();
     private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
-    private final ActionBudget budget = new ActionBudget();
 
     // Release-click gap
     private long lastReleaseNanos;
@@ -93,7 +92,6 @@ public final class AutoRightClient implements ClientModInitializer {
             physicalWasDown = physicalDown;
             restoreVanillaUse(client, physicalDown);
             clearRuntimeState();
-            budget.reset();
             return;
         }
 
@@ -103,7 +101,6 @@ public final class AutoRightClient implements ClientModInitializer {
             physicalWasDown = physicalDown;
             restoreVanillaUse(client, physicalDown);
             clearRuntimeState();
-            budget.reset();
             return;
         }
 
@@ -127,12 +124,9 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        // Release-click gap
-        if (System.nanoTime() - lastReleaseNanos < RELEASE_GAP_NANOS) {
-            physicalWasDown = true;
-            restoreVanillaUse(client, true);
-            return;
-        }
+        // Release-click gap: skip automation, let vanilla hold pass through.
+        // But still process the rising edge so pressedKind gets set correctly.
+        boolean inReleaseGap = System.nanoTime() - lastReleaseNanos < RELEASE_GAP_NANOS;
 
         // TPS-drop silence
         long nowNanos = System.nanoTime();
@@ -203,14 +197,16 @@ public final class AutoRightClient implements ClientModInitializer {
         }
 
         // Budget gate
-        if (!budget.requestRight(nowNanos, false)) {
-            restoreVanillaUse(client, false);
+        if (inReleaseGap) {
+            restoreVanillaUse(client, true);
             placementPolicy.clearRuntimeState();
             return;
         }
 
         restoreVanillaUse(client, false);
         boolean validCandidate = client.crosshairTarget instanceof BlockHitResult;
+
+        // Compute pulses first
         int pulses;
         if (jitterEnabled) {
             pulses = placementPolicy.pulsesThisTick(
@@ -222,9 +218,12 @@ public final class AutoRightClient implements ClientModInitializer {
             pulses = placementPolicy.pulsesThisTick(cps,
                     enabled, activeGameplay, physicalDown, validCandidate);
         }
-        for (int i = 0; i < pulses; i++) {
+
+        // Execute only what budget allows
+        while (pulses > 0 && ActionBudget.INSTANCE.requestRight()) {
             if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;
             AutoLeftClient.rightCpsTracker.recordClick();
+            pulses--;
         }
     }
 

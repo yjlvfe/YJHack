@@ -6,10 +6,11 @@ import java.util.random.RandomGeneratorFactory;
 /**
  * Humanized CPS limiter — variable inter-click timing.
  *
- * <p>The jitter range scales with CPS: 10cps→±10%, 20cps→±15%, 40cps→±25%.
- * Higher CPS = wider timing variation = harder for anti-cheat to pattern-match.
+ * <p>The jitter range scales with CPS: 10cps→±10%, 20cps→±15%.
+ * Higher CPS = wider timing variation.
  *
- * <p>At most 1 click per call, or 2 when behind schedule.
+ * <p>Strictly at most 1 click per call. Missed time is discarded —
+ * no catch-up, no burst, no replay.
  */
 public final class HumanizedCpsLimiter {
 
@@ -45,27 +46,18 @@ public final class HumanizedCpsLimiter {
 
         if (nowNanos < nextClickAt) return 0;
 
-        int emitted = 1;
-        if (nowNanos - nextClickAt > avgIntervalNs(cps)) {
-            emitted = 2;
-        }
-
+        // Exactly 1 click. No catch-up, no burst.
         scheduleNext(nowNanos, cps);
-        return emitted;
+        return 1;
     }
 
     private void scheduleNext(long now, int cps) {
         double baseNs = 1_000_000_000.0 / cps;
         double ratio = jitterRatio(cps);
-        // Jitter range scales with CPS: ratio from 10% to 25%
         double minMultiplier = 1.0 - ratio;
         double maxMultiplier = 1.0 + ratio;
         double jittered = baseNs * (minMultiplier + RNG.nextDouble() * (maxMultiplier - minMultiplier));
         nextClickAt = now + (long) jittered;
-    }
-
-    private long avgIntervalNs(int cps) {
-        return (long) (1_000_000_000.0 / cps * 1.15);
     }
 
     public void clearTimingState() {

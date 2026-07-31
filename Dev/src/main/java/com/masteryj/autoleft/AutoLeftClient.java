@@ -45,7 +45,6 @@ public final class AutoLeftClient implements ClientModInitializer {
 
     private final LegacyMultiVersionCombatPolicy combatPolicy = new LegacyMultiVersionCombatPolicy();
     private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
-    private final ActionBudget budget = new ActionBudget();
 
     // Release-click gap: skip first tick after re-press
     private long lastReleaseNanos;
@@ -102,7 +101,6 @@ public final class AutoLeftClient implements ClientModInitializer {
             physicalWasDown = physicalDown;
             restoreVanillaAttack(client, physicalDown);
             clearRuntimeState();
-            budget.reset();
             return;
         }
 
@@ -112,7 +110,6 @@ public final class AutoLeftClient implements ClientModInitializer {
             physicalWasDown = physicalDown;
             restoreVanillaAttack(client, physicalDown);
             clearRuntimeState();
-            budget.reset();
             return;
         }
 
@@ -177,31 +174,28 @@ public final class AutoLeftClient implements ClientModInitializer {
             return;
         }
 
-        // Action budget gate
-        if (!budget.requestLeft(nowNanos, false)) {
-            restoreVanillaAttack(client, true);
-            return;
-        }
-
         restoreVanillaAttack(client, false);
+
+        // Compute pulses first, then ask budget per pulse
+        int pulses = 0;
         boolean shouldFire;
         if (jitterEnabled) {
             shouldFire = combatPolicy.shouldEmitFollowUp(
                     enabled, activeGameplay, physicalDown, entityTargeted);
-            int pulses = clickLimiter.acquire(nowNanos, cps, true);
-            if (shouldFire && pulses > 0) {
-                for (int i = 0; i < pulses; i++) {
-                    ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
-                    leftCpsTracker.recordClick();
-                }
+            if (shouldFire) {
+                pulses = clickLimiter.acquire(nowNanos, cps, true);
             }
         } else {
             shouldFire = combatPolicy.shouldEmitFollowUp(nowNanos, cps,
                     enabled, activeGameplay, physicalDown, entityTargeted);
-            if (shouldFire) {
-                ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
-                leftCpsTracker.recordClick();
-            }
+            if (shouldFire) pulses = 1;
+        }
+
+        // Execute only what budget allows
+        while (pulses > 0 && ActionBudget.INSTANCE.requestLeft()) {
+            ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+            leftCpsTracker.recordClick();
+            pulses--;
         }
     }
 
