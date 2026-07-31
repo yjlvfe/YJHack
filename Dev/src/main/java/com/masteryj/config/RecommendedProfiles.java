@@ -29,14 +29,6 @@ public final class RecommendedProfiles {
     }
 
     public static TrackerClient.Config tracker() {
-        TrackerClient.Config cfg = new TrackerClient.Config();
-        cfg.enabled = false;
-        cfg.toggleKeyCode = -1;
-        cfg.ignoreOwnTeam = RecommendedSettings.TRACKER_IGNORE_TEAM;
-        cfg.range = RecommendedSettings.TRACKER_RANGE;
-        cfg.hudOffsetX = RecommendedSettings.TRACKER_HUD_X;
-        cfg.hudY = RecommendedSettings.TRACKER_HUD_Y;
-        cfg.normalize();
-        return cfg;
+        return TrackerClient.recommendedDefaults();
     }
 }
