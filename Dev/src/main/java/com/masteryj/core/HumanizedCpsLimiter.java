@@ -4,12 +4,16 @@ import java.util.random.RandomGenerator;
 import java.util.random.RandomGeneratorFactory;
 
 /**
- * Humanized CPS limiter.
+ * Humanized CPS limiter — variable inter-click timing with a hard ceiling of
+ * 1 click per game tick (or 2 when CPS exceeds tick rate).
  *
- * <p>Returns 1 click per call normally. When the configured CPS exceeds the
- * call rate (e.g. 40 CPS at 20 ticks/sec), two clicks may fire in one tick to
- * reach the target. The jitter comes from randomized batch sizes and per-click
- * micro-jittered intervals.
+ * <p>This is NOT a batch system. It's a real-time interval system:
+ * the limiter tracks when the next click is due. Jitter means the interval
+ * between clicks varies randomly, so the number of clicks in any given
+ * second varies — but the long-term average stays at the configured CPS.
+ *
+ * <p>At most 1 click per call, or 2 when behind schedule. Missed calls
+ * during lag are treated as \"no-op\" — no catch-up bursts.
  */
 public final class HumanizedCpsLimiter {
 
@@ -25,11 +29,8 @@ public final class HumanizedCpsLimiter {
 
     private final FixedCpsLimiter delegate = new FixedCpsLimiter();
 
-    private int remaining;
-    private long nextNanos;
-    private long intervalNs;
-    private long lastCallNanos = Long.MIN_VALUE;
-    private transient int callRate; // estimated calls per second
+    private long nextClickAt;
+    private boolean initialized;
 
     public int acquire(long nowNanos, int configuredCps, boolean jitterEnabled) {
         int cps = FixedCpsLimiter.clampCps(configuredCps);
@@ -42,53 +43,43 @@ public final class HumanizedCpsLimiter {
     }
 
     private int acquireJittered(long nowNanos, int cps) {
-        if (lastCallNanos != Long.MIN_VALUE) {
-            long gap = nowNanos - lastCallNanos;
-            if (gap > 0) callRate = (int) (1_000_000_000L / gap);
-        }
-        lastCallNanos = nowNanos;
-
-        if (remaining <= 0) {
-            generateBatch(cps, nowNanos);
+        if (!initialized) {
+            initialized = true;
+            scheduleNext(nowNanos, cps);
+            // Emit first click immediately
+            return 1;
         }
 
-        int maxPerTick = Math.max(1, cps / Math.max(1, callRate));
-        int emitted = 0;
+        if (nowNanos < nextClickAt) return 0;
 
-        while (remaining > 0 && nowNanos >= nextNanos && emitted < maxPerTick) {
-            remaining--;
-            emitted++;
-            if (remaining > 0) {
-                long jitter = (long) (MICRO_MIN + RNG.nextDouble() * MICRO_RANGE);
-                nextNanos += jitter * intervalNs;
-            }
+        // Click is due. Count 1, or 2 if we've fallen behind.
+        int emitted = 1;
+        long nextBase = nowNanos;
+
+        if (nowNanos - nextClickAt > scheduleNextNanos(cps)) {
+            // We're more than one interval behind — emit 2 but skip the overshoot
+            emitted = 2;
+            nextBase = nowNanos;
         }
 
-        // If we missed several (lag), skip them but count at most 1 extra
-        while (remaining > 0 && nowNanos >= nextNanos) {
-            remaining--;
-            if (remaining > 0) {
-                long jitter = (long) (MICRO_MIN + RNG.nextDouble() * MICRO_RANGE);
-                nextNanos += jitter * intervalNs;
-            }
-        }
-
+        scheduleNext(nextBase, cps);
         return emitted;
     }
 
-    private void generateBatch(int cps, long nowNanos) {
-        double ratio = jitterRatio(cps);
-        int offset = (int) Math.round(cps * ratio * (RNG.nextDouble() * 2.0 - 1.0));
-        remaining = Math.max(1, cps + offset);
+    private void scheduleNext(long now, int cps) {
+        double baseNs = 1_000_000_000.0 / cps;
+        double jittered = baseNs * (0.85 + RNG.nextDouble() * 0.30);
+        nextClickAt = now + (long) jittered;
+    }
 
-        double windowMs = 1000.0 * (1.0 + ratio * (RNG.nextDouble() * 2.0 - 1.0));
-        intervalNs = Math.max(1L, (long) (windowMs * 1_000_000L / remaining));
-        nextNanos = nowNanos;
+    /** Average interval with jitter ratio factored in. */
+    private long scheduleNextNanos(int cps) {
+        double baseNs = 1_000_000_000.0 / cps;
+        return (long) (baseNs * 1.15);
     }
 
     public void clearTimingState() {
-        remaining = 0;
-        lastCallNanos = Long.MIN_VALUE;
+        initialized = false;
         delegate.clearTimingState();
     }
 
