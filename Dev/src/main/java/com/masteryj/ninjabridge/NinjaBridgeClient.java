@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.masteryj.config.RecommendedSettings;
 import com.masteryj.core.DebugStats;
 import com.masteryj.core.PhysicalKeyBinding;
 import net.fabricmc.api.ClientModInitializer;
@@ -33,19 +34,19 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-NinjaBridge");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("ninjabridge.json");
-    private static final int CURRENT_CONFIG_VERSION = 9;
+    private static final int CURRENT_CONFIG_VERSION = 10;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
     private static final int DEFAULT_KEY = GLFW.GLFW_KEY_RIGHT_SHIFT;
     private static final int MOUSE_OFF = 1000;
-    private static final long SWITCH_COOLDOWN_NANOS = 120_000_000L;
 
     private final Map<Block, Boolean> blockCache = new IdentityHashMap<>();
 
     public static Config config;
-    public static boolean enabled = false;
+    public static boolean enabled;
     public static int toggleKeyCode = GLFW.GLFW_KEY_UNKNOWN;
-    public static boolean active = false;
-    public static boolean autoSwitch = false;
+    public static boolean active;
+    public static boolean autoSwitch = RecommendedSettings.NINJA_AUTO_SWITCH;
+    public static int switchDelayMs = RecommendedSettings.NINJA_SWITCH_DELAY_MS;
 
     private World lastWorld;
     private long lastConfigCheckNanos = Long.MIN_VALUE;
@@ -69,11 +70,11 @@ public final class NinjaBridgeClient implements ClientModInitializer {
 
         if (client == null || client.world != lastWorld) {
             lastWorld = client == null ? null : client.world;
-            resetWorldState(client);
+            clearWorldState(client);
         }
 
         if (client == null || client.player == null || client.world == null) {
-            resetWorldState(client);
+            clearWorldState(client);
             return;
         }
 
@@ -82,20 +83,18 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         boolean gated = client.currentScreen != null || !client.isWindowFocused()
                 || !client.mouse.isCursorLocked();
 
-        // Track the real toggle key even while disabled. Enabling the module from the GUI while the
-        // key is already held must not look like a fresh toggle press.
         if (!enabled) {
             active = false;
             if (rawDown) requireToggleRelease = true;
             toggleWasDown = rawDown;
-            unsneak(client);
+            releaseSyntheticSneak(client);
             return;
         }
 
         boolean alive = client.player.isAlive() && client.player.getHealth() > 0.0F;
         if (previousAlive && !alive) {
             active = false;
-            unsneak(client);
+            releaseSyntheticSneak(client);
             sendMessage(client, false, false);
         }
         previousAlive = alive;
@@ -104,7 +103,7 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         if (gated) {
             if (rawDown) requireToggleRelease = true;
             toggleWasDown = rawDown;
-            unsneak(client);
+            releaseSyntheticSneak(client);
             return;
         }
 
@@ -113,19 +112,19 @@ public final class NinjaBridgeClient implements ClientModInitializer {
                 requireToggleRelease = false;
                 toggleWasDown = false;
             }
-            unsneak(client);
+            releaseSyntheticSneak(client);
             return;
         }
 
         if (rawDown && !toggleWasDown) {
             active = !active;
             sendMessage(client, active, true);
-            if (!active) unsneak(client);
+            if (!active) releaseSyntheticSneak(client);
         }
         toggleWasDown = rawDown;
 
         if (!active) {
-            unsneak(client);
+            releaseSyntheticSneak(client);
             return;
         }
 
@@ -134,8 +133,6 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         boolean desiredSneak = client.world.getBlockState(below).isAir();
         boolean onGround = client.player.isOnGround();
 
-        // Do not fight the player's selected weapon/tool on safe ground. Auto-switch is needed only
-        // at a real edge where NinjaBridge is about to hold sneak for placement.
         if (shouldAutoSwitch(autoSwitch, active, desiredSneak, onGround)) {
             doAutoSwitch(client, System.nanoTime());
         }
@@ -145,8 +142,8 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         }
     }
 
-    private void resetWorldState(MinecraftClient client) {
-        unsneak(client);
+    private void clearWorldState(MinecraftClient client) {
+        releaseSyntheticSneak(client);
         active = false;
         toggleWasDown = false;
         requireToggleRelease = false;
@@ -178,6 +175,11 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         return targetSlot != currentSlot;
     }
 
+    static long switchDelayNanos(int configuredMs) {
+        int normalized = Math.max(50, Math.min(500, configuredMs));
+        return normalized * 1_000_000L;
+    }
+
     private void doAutoSwitch(MinecraftClient client, long now) {
         ItemStack held = client.player.getMainHandStack();
         if (isValidBlock(held)) {
@@ -207,7 +209,7 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         int selected = client.player.getInventory().getSelectedSlot();
         if (!needsSlotSwitch(slot, selected)) return;
         if (lastSwitchAtNanos != Long.MIN_VALUE
-                && now - lastSwitchAtNanos < SWITCH_COOLDOWN_NANOS) return;
+                && now - lastSwitchAtNanos < switchDelayNanos(switchDelayMs)) return;
         client.player.getInventory().setSelectedSlot(slot);
         lastSwitchAtNanos = now;
         DebugStats.onSlotChange();
@@ -247,7 +249,7 @@ public final class NinjaBridgeClient implements ClientModInitializer {
                 || block instanceof PressurePlateBlock || block instanceof ShulkerBoxBlock;
     }
 
-    private void unsneak(MinecraftClient client) {
+    private void releaseSyntheticSneak(MinecraftClient client) {
         if (!syntheticSneak) return;
         setSyntheticSneak(client, false);
     }
@@ -283,38 +285,35 @@ public final class NinjaBridgeClient implements ClientModInitializer {
                 String json = Files.readString(CONFIG_PATH);
                 JsonObject root = JsonParser.parseString(json).getAsJsonObject();
                 boolean autoSwitchPresent = root.has("autoSwitch");
+                boolean switchDelayPresent = root.has("switchDelayMs");
                 Config loaded = GSON.fromJson(root, Config.class);
                 if (loaded != null) {
-                    loaded.normalize(autoSwitchPresent);
+                    loaded.normalize(autoSwitchPresent, switchDelayPresent);
                     lastKnownWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
+                    saveConfig(loaded);
                     return loaded;
                 }
             }
         } catch (Exception e) {
             LOGGER.error("Failed to load config", e);
         }
-        Config fresh = new Config();
-        fresh.normalize(true);
+        Config fresh = recommendedDefaults();
         saveConfig(fresh);
         return fresh;
     }
 
     public void saveConfig(Config cfg) {
-        if (cfg == null) return;
-        cfg.normalize(true);
-        applyRuntimeConfig(cfg);
+        saveConfigStatic(cfg);
         try {
-            Files.createDirectories(CONFIG_PATH.getParent());
-            Files.writeString(CONFIG_PATH, GSON.toJson(cfg));
-            lastKnownWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
+            if (Files.exists(CONFIG_PATH)) lastKnownWriteTime = Files.getLastModifiedTime(CONFIG_PATH);
         } catch (IOException e) {
-            LOGGER.error("Failed to save config", e);
+            LOGGER.error("Failed to read config write time", e);
         }
     }
 
     public static void saveConfigStatic(Config cfg) {
         if (cfg == null) return;
-        cfg.normalize(true);
+        cfg.normalize(true, true);
         applyRuntimeConfig(cfg);
         try {
             Files.createDirectories(CONFIG_PATH.getParent());
@@ -330,23 +329,53 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         enabled = cfg.enabled;
         toggleKeyCode = cfg.toggleKeyCode;
         autoSwitch = cfg.autoSwitch;
+        switchDelayMs = cfg.switchDelayMs;
+    }
+
+    public static Config recommendedDefaults() {
+        return Config.recommendedDefaults();
     }
 
     public static final class Config {
         public int configVersion = CURRENT_CONFIG_VERSION;
         public boolean enabled = false;
         public int toggleKeyCode = DEFAULT_KEY;
-        public boolean autoSwitch = false;
+        public boolean autoSwitch = RecommendedSettings.NINJA_AUTO_SWITCH;
+        public int switchDelayMs = RecommendedSettings.NINJA_SWITCH_DELAY_MS;
 
-        public void norm() {
-            normalize(true);
+        public static Config recommendedDefaults() {
+            Config cfg = new Config();
+            cfg.configVersion = CURRENT_CONFIG_VERSION;
+            cfg.enabled = false;
+            cfg.toggleKeyCode = DEFAULT_KEY;
+            cfg.autoSwitch = RecommendedSettings.NINJA_AUTO_SWITCH;
+            cfg.switchDelayMs = RecommendedSettings.NINJA_SWITCH_DELAY_MS;
+            cfg.normalize(true, true);
+            return cfg;
         }
 
-        void normalize(boolean autoSwitchPresent) {
+        public Config copy() {
+            Config result = new Config();
+            result.configVersion = configVersion;
+            result.enabled = enabled;
+            result.toggleKeyCode = toggleKeyCode;
+            result.autoSwitch = autoSwitch;
+            result.switchDelayMs = switchDelayMs;
+            result.normalize(true, true);
+            return result;
+        }
+
+        public void norm() {
+            normalize(true, true);
+        }
+
+        void normalize(boolean autoSwitchPresent, boolean switchDelayPresent) {
             if (configVersion < 6) toggleKeyCode = DEFAULT_KEY;
-            if (!autoSwitchPresent) autoSwitch = false;
+            if (!autoSwitchPresent) autoSwitch = RecommendedSettings.NINJA_AUTO_SWITCH;
+            if (!switchDelayPresent) switchDelayMs = RecommendedSettings.NINJA_SWITCH_DELAY_MS;
             configVersion = CURRENT_CONFIG_VERSION;
             toggleKeyCode = normalizeKey(toggleKeyCode);
+            switchDelayMs = Math.max(50, Math.min(500, switchDelayMs));
         }
     }
 
