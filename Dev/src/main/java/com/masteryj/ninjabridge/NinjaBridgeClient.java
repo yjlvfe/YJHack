@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.masteryj.core.DebugStats;
+import com.masteryj.core.PhysicalKeyBinding;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -32,7 +33,7 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-NinjaBridge");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("ninjabridge.json");
-    private static final int CURRENT_CONFIG_VERSION = 8;
+    private static final int CURRENT_CONFIG_VERSION = 9;
     private static final long CONFIG_RELOAD_INTERVAL_NANOS = 5_000_000_000L;
     private static final int DEFAULT_KEY = GLFW.GLFW_KEY_RIGHT_SHIFT;
     private static final int MOUSE_OFF = 1000;
@@ -53,7 +54,7 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private boolean requireToggleRelease;
     private boolean previousAlive = true;
     private int lastSlot = -1;
-    private boolean wasSneaking;
+    private boolean syntheticSneak;
     private long lastSwitchAtNanos = Long.MIN_VALUE;
 
     @Override
@@ -66,18 +67,27 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     private void tick(MinecraftClient client) {
         maybeReload();
 
-        if (client.world != lastWorld) {
-            lastWorld = client.world;
+        if (client == null || client.world != lastWorld) {
+            lastWorld = client == null ? null : client.world;
             resetWorldState(client);
         }
 
-        if (client.player == null || client.world == null) {
+        if (client == null || client.player == null || client.world == null) {
             resetWorldState(client);
             return;
         }
 
+        int key = normalizeKey(toggleKeyCode);
+        boolean rawDown = key != GLFW.GLFW_KEY_UNKNOWN && isRawPressed(client, key);
+        boolean gated = client.currentScreen != null || !client.isWindowFocused()
+                || !client.mouse.isCursorLocked();
+
+        // Track the real toggle key even while disabled. Enabling the module from the GUI while the
+        // key is already held must not look like a fresh toggle press.
         if (!enabled) {
             active = false;
+            if (rawDown) requireToggleRelease = true;
+            toggleWasDown = rawDown;
             unsneak(client);
             return;
         }
@@ -90,11 +100,6 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         }
         previousAlive = alive;
         if (!alive || client.player.isSpectator()) return;
-
-        int key = normalizeKey(toggleKeyCode);
-        boolean rawDown = key != GLFW.GLFW_KEY_UNKNOWN && isRawPressed(client, key);
-        boolean gated = client.currentScreen != null || !client.isWindowFocused()
-                || !client.mouse.isCursorLocked();
 
         if (gated) {
             if (rawDown) requireToggleRelease = true;
@@ -124,15 +129,19 @@ public final class NinjaBridgeClient implements ClientModInitializer {
             return;
         }
 
-        long now = System.nanoTime();
-        if (autoSwitch) doAutoSwitch(client, now);
-
         BlockPos below = BlockPos.ofFloored(
                 client.player.getX(), client.player.getY() - 1.0D, client.player.getZ());
         boolean desiredSneak = client.world.getBlockState(below).isAir();
-        if (sneakShouldChange(desiredSneak, wasSneaking, client.player.isOnGround())) {
-            setSneakState(client, desiredSneak);
-            wasSneaking = desiredSneak;
+        boolean onGround = client.player.isOnGround();
+
+        // Do not fight the player's selected weapon/tool on safe ground. Auto-switch is needed only
+        // at a real edge where NinjaBridge is about to hold sneak for placement.
+        if (shouldAutoSwitch(autoSwitch, active, desiredSneak, onGround)) {
+            doAutoSwitch(client, System.nanoTime());
+        }
+
+        if (sneakShouldChange(desiredSneak, syntheticSneak, onGround)) {
+            setSyntheticSneak(client, desiredSneak);
         }
     }
 
@@ -147,14 +156,22 @@ public final class NinjaBridgeClient implements ClientModInitializer {
         blockCache.clear();
     }
 
-    private static void setSneakState(MinecraftClient client, boolean sneak) {
+    /** Apply synthetic sneak without ever cancelling a real physical sneak hold. */
+    private void setSyntheticSneak(MinecraftClient client, boolean sneak) {
+        syntheticSneak = sneak;
         if (client == null || client.options == null) return;
-        client.options.sneakKey.setPressed(sneak);
+        boolean physicalSneak = PhysicalKeyBinding.isPressed(client, client.options.sneakKey);
+        client.options.sneakKey.setPressed(physicalSneak || syntheticSneak);
         DebugStats.onSneakTransition();
     }
 
     static boolean sneakShouldChange(boolean desiredSneak, boolean lastSneak, boolean onGround) {
         return desiredSneak != lastSneak && onGround;
+    }
+
+    static boolean shouldAutoSwitch(boolean configured, boolean active,
+                                    boolean desiredSneak, boolean onGround) {
+        return configured && active && desiredSneak && onGround;
     }
 
     static boolean needsSlotSwitch(int targetSlot, int currentSlot) {
@@ -231,9 +248,8 @@ public final class NinjaBridgeClient implements ClientModInitializer {
     }
 
     private void unsneak(MinecraftClient client) {
-        if (!wasSneaking) return;
-        setSneakState(client, false);
-        wasSneaking = false;
+        if (!syntheticSneak) return;
+        setSyntheticSneak(client, false);
     }
 
     private void sendMessage(MinecraftClient client, boolean on, boolean toggle) {
