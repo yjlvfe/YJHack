@@ -29,11 +29,11 @@ public final class LegacyMultiVersionCombatPolicy {
 
     /** Clears timing only. It does not change settings or create input. */
     public void clearRuntimeState() {
-        limiter.reset();
+        limiter.clearTimingState();
     }
 
     /** Explicit name for dropping overdue work; there is no queue to drain. */
     public void discardOverduePulse() {
-        limiter.reset();
+        limiter.clearTimingState();
     }
 }
