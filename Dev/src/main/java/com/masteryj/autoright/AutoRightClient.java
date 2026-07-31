@@ -6,21 +6,16 @@ import com.masteryj.config.RecommendedSettings;
 import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
 import com.masteryj.core.PhysicalKeyBinding;
-import com.masteryj.mixin.MinecraftClientInvoker;
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
@@ -31,15 +26,20 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * One fixed physical-hold right-click path. Instant items use once per physical press, hold/charge
- * items remain vanilla, and blocks use Minecraft's own doItemUse() through a no-backlog policy.
+ * Fixed-CPS held right click with vanilla queued input.
+ *
+ * <p>The first physical use remains vanilla. Blocks receive fixed tick-aligned follow-ups through
+ * Minecraft's configured use binding; instant items use once per physical press; hold/charge items
+ * remain completely vanilla. There is no min/max range, elapsed-time catch-up, or packet spoofing.
  */
 public final class AutoRightClient implements ClientModInitializer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("YJHack-AutoRight");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("autoright.json");
-    private static final int CURRENT_CONFIG_VERSION = 8;
+    private static final int CURRENT_CONFIG_VERSION = 9;
+    private static final int LEGACY_CONSERVATIVE_FIXED_CPS = 10;
+    private static final int BLOCK_RESTOCK_GRACE_TICKS = 4;
 
     private final LegacyMultiVersionPlacementPolicy placementPolicy =
             new LegacyMultiVersionPlacementPolicy();
@@ -56,16 +56,18 @@ public final class AutoRightClient implements ClientModInitializer {
     private int pressedSlot = -1;
     private Item pressedItem;
     private RightClickPolicy.Kind pressedKind = RightClickPolicy.Kind.PASS_THROUGH;
+    private int blockRestockGraceTicks;
     private boolean toggleKeyWasDown;
 
     @Override
     public void onInitializeClient() {
         config = loadConfig();
         applyRuntimeConfig(config);
-        WorldRenderEvents.END.register(context -> frame(MinecraftClient.getInstance()));
+        // Queue before vanilla's normal input handling instead of calling doItemUse from rendering.
+        ClientTickEvents.START_CLIENT_TICK.register(this::tickRightAutoClick);
     }
 
-    private void frame(MinecraftClient client) {
+    private void tickRightAutoClick(MinecraftClient client) {
         handleToggleKey(client);
 
         boolean physicalDown = isUseDown(client);
@@ -118,27 +120,26 @@ public final class AutoRightClient implements ClientModInitializer {
             pressedItem = currentItem;
             pressedKind = currentKind;
             pressInvalidated = false;
+            blockRestockGraceTicks = 0;
             physicalWasDown = true;
             restoreVanillaUse(client, true);
             placementPolicy.clearRuntimeState();
-            if (pressedKind == RightClickPolicy.Kind.BLOCK
-                    && isValidPlacementCandidate(client, held)) {
-                placementPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
-                        true, true, true, true);
-            }
-            // The first physical use remains fully vanilla.
+            // The first real physical use stays fully vanilla.
             return;
         }
 
         physicalWasDown = true;
         if (pressIdentityChanged(pressedSlot, pressedItem, currentSlot, currentItem)) {
             if (LegacyMultiVersionPlacementPolicy.canContinueAcrossSlotChange(pressedKind, currentKind)) {
-                // NinjaBridge may move from an empty block stack to another block stack while the
-                // physical hold remains down. Keep block context but drop old timing.
-                pressedSlot = currentSlot;
-                pressedItem = currentItem;
-                pressedKind = currentKind;
+                adoptCurrentBlock(currentSlot, currentItem, currentKind);
+            } else if (pressedKind == RightClickPolicy.Kind.BLOCK && held.isEmpty()
+                    && blockRestockGraceTicks < BLOCK_RESTOCK_GRACE_TICKS) {
+                // A stack can become empty one or two ticks before NinjaBridge selects the next
+                // block stack. Suppress the empty-hand interval instead of permanently killing hold.
+                blockRestockGraceTicks++;
+                restoreVanillaUse(client, false);
                 placementPolicy.clearRuntimeState();
+                return;
             } else {
                 pressInvalidated = true;
             }
@@ -163,14 +164,23 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        // Stop vanilla's held repeat after the first physical use. The policy is the sole follow-up
-        // owner and always calls vanilla doItemUse(), preserving sequence ids and prediction rules.
+        // The queued binding is the sole follow-up owner. Vanilla still performs the actual use,
+        // sequence-id handling, prediction, collision checks and final placement decision.
         restoreVanillaUse(client, false);
-        boolean validCandidate = isValidPlacementCandidate(client, held);
-        if (placementPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
-                enabled, activeGameplay, physicalDown, validCandidate)) {
-            ((MinecraftClientInvoker) client).yjhack$invokeDoItemUse();
+        boolean validCandidate = client.crosshairTarget instanceof BlockHitResult;
+        int pulses = placementPolicy.pulsesThisTick(cps,
+                enabled, activeGameplay, physicalDown, validCandidate);
+        for (int i = 0; i < pulses; i++) {
+            if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;
         }
+    }
+
+    private void adoptCurrentBlock(int currentSlot, Item currentItem, RightClickPolicy.Kind currentKind) {
+        pressedSlot = currentSlot;
+        pressedItem = currentItem;
+        pressedKind = currentKind;
+        blockRestockGraceTicks = 0;
+        placementPolicy.clearRuntimeState();
     }
 
     static boolean shouldSuppressVanillaHold(boolean enabled,
@@ -188,24 +198,6 @@ public final class AutoRightClient implements ClientModInitializer {
         return initialSlot != currentSlot || initialItem != currentItem;
     }
 
-    private boolean isValidPlacementCandidate(MinecraftClient client, ItemStack held) {
-        if (client == null || client.player == null || client.world == null
-                || held == null || held.isEmpty() || !(held.getItem() instanceof BlockItem)
-                || !(client.crosshairTarget instanceof BlockHitResult hit)
-                || hit.getType() != HitResult.Type.BLOCK) {
-            return false;
-        }
-
-        BlockPos clickedPos = hit.getBlockPos();
-        BlockState clickedState = client.world.getBlockState(clickedPos);
-        BlockPos placementPos = clickedState.isReplaceable()
-                ? clickedPos
-                : clickedPos.offset(hit.getSide());
-
-        if (!client.world.getWorldBorder().contains(placementPos)) return false;
-        return client.world.getBlockState(placementPos).isReplaceable();
-    }
-
     private void restoreVanillaUse(MinecraftClient client, boolean pressed) {
         if (client != null && client.options != null) client.options.useKey.setPressed(pressed);
     }
@@ -216,6 +208,7 @@ public final class AutoRightClient implements ClientModInitializer {
         pressedItem = null;
         pressedKind = RightClickPolicy.Kind.PASS_THROUGH;
         pressInvalidated = false;
+        blockRestockGraceTicks = 0;
     }
 
     private void clearRuntimeState() {
@@ -305,9 +298,13 @@ public final class AutoRightClient implements ClientModInitializer {
         }
 
         public void normalize() {
-            if (configVersion < CURRENT_CONFIG_VERSION) {
+            int previousVersion = configVersion;
+            if (previousVersion < 8) {
                 if (maxCps != null) cps = maxCps;
                 else if (minCps != null) cps = minCps;
+            } else if (previousVersion == 8 && cps == LEGACY_CONSERVATIVE_FIXED_CPS) {
+                // v1.3.0's exact default was half the original effective placement cadence.
+                cps = RecommendedSettings.AUTO_RIGHT_CPS;
             }
             configVersion = CURRENT_CONFIG_VERSION;
             cps = FixedCpsLimiter.clampCps(cps);
