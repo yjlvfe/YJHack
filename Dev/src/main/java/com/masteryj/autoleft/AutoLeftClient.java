@@ -193,7 +193,7 @@ public final class AutoLeftClient implements ClientModInitializer {
 
         // Execute only what budget allows
         while (pulses > 0 && ActionBudget.INSTANCE.requestLeft()) {
-            ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+            PhysicalKeyBinding.queuePress(client, client.options.attackKey);
             leftCpsTracker.recordClick();
             pulses--;
         }

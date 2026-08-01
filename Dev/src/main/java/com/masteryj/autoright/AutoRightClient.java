@@ -9,6 +9,7 @@ import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
 import com.masteryj.core.ActionBudget;
 import com.masteryj.autoleft.AutoLeftClient;
+import com.masteryj.mixin.MinecraftClientInvoker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -223,7 +224,10 @@ public final class AutoRightClient implements ClientModInitializer {
 
         // Execute only what budget allows
         while (pulses > 0 && ActionBudget.INSTANCE.requestRight()) {
-            if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;
+            // Try vanilla queue first (works on most servers), fallback to doItemUse
+            if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) {
+                ((MinecraftClientInvoker) client).yjhack$invokeDoItemUse();
+            }
             AutoLeftClient.rightCpsTracker.recordClick();
             pulses--;
         }
