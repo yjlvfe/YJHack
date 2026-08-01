@@ -177,16 +177,18 @@ public final class AutoRightClient implements ClientModInitializer {
         if (jitterEnabled) {
             pulses = placementPolicy.pulsesThisTick(cps,
                     enabled, activeGameplay, physicalDown, validCandidate);
-            if (pulses > 0) {
-                pulses = clickLimiter.acquire(nowNanos, cps, true);
+            // Resample through jittered limiter for humanized timing
+            if (pulses > 0 && clickLimiter.acquire(nowNanos, cps, true) == 0) {
+                pulses = 0;
             }
         } else {
             pulses = placementPolicy.pulsesThisTick(cps,
                     enabled, activeGameplay, physicalDown, validCandidate);
         }
-        for (int i = 0; i < pulses; i++) {
+        while (pulses > 0) {
             if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;
             AutoLeftClient.rightCpsTracker.recordClick();
+            pulses--;
         }
     }
 

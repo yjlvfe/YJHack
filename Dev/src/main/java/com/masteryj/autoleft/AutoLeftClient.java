@@ -143,19 +143,11 @@ public final class AutoLeftClient implements ClientModInitializer {
             return;
         }
 
-        // Skip while not targeting an entity (mining/empty hold = vanilla)
-        boolean entityTargeted = client.crosshairTarget instanceof EntityHitResult;
-        if (!entityTargeted) {
-            restoreVanillaAttack(client, true);
-            clearRuntimeState();
-            return;
-        }
-
         long nowNanos = System.nanoTime();
         restoreVanillaAttack(client, false);
         if (jitterEnabled) {
             if (combatPolicy.shouldEmitFollowUp(
-                    enabled, activeGameplay, physicalDown, entityTargeted)) {
+                    enabled, activeGameplay, physicalDown, true)) {
                 int pulses = clickLimiter.acquire(nowNanos, cps, true);
                 for (int i = 0; i < pulses; i++) {
                     if (legacyMode) {
@@ -168,7 +160,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             }
         } else {
             if (combatPolicy.shouldEmitFollowUp(nowNanos, cps,
-                    enabled, activeGameplay, physicalDown, entityTargeted)) {
+                    enabled, activeGameplay, physicalDown, true)) {
                 if (legacyMode) {
                     LegacyAttack.perform(client);
                 } else {
