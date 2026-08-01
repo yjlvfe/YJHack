@@ -125,19 +125,26 @@ public final class AutoLeftClient implements ClientModInitializer {
         }
 
         physicalWasDown = true;
-        boolean entityTargeted = client.crosshairTarget instanceof EntityHitResult;
 
         if (rising) {
             restoreVanillaAttack(client, true);
             clearRuntimeState();
-            if (entityTargeted) {
+            if (client.crosshairTarget instanceof EntityHitResult) {
                 combatPolicy.shouldEmitFollowUp(System.nanoTime(), cps,
                         true, true, true, true);
             }
             return;
         }
 
-        if (!shouldRunDirectAttack(enabled, activeGameplay, physicalDown, entityTargeted)) {
+        if (!enabled || !activeGameplay || !physicalDown) {
+            restoreVanillaAttack(client, physicalDown);
+            clearRuntimeState();
+            return;
+        }
+
+        // Skip while not targeting an entity (mining/empty hold = vanilla)
+        boolean entityTargeted = client.crosshairTarget instanceof EntityHitResult;
+        if (!entityTargeted) {
             restoreVanillaAttack(client, true);
             clearRuntimeState();
             return;
