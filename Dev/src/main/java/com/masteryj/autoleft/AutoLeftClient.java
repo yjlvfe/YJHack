@@ -7,7 +7,7 @@ import com.masteryj.core.FixedCpsLimiter;
 import com.masteryj.core.GameplayGate;
 import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
-import com.masteryj.core.ActionBudget;
+import com.masteryj.core.LegacyAttack;
 import com.masteryj.mixin.MinecraftClientInvoker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.rendering.v1.HudLayerRegistrationCallback;
@@ -59,6 +59,7 @@ public final class AutoLeftClient implements ClientModInitializer {
     public static int toggleKeyCode = -1;
     public static int cps = RecommendedSettings.AUTO_LEFT_CPS;
     public static boolean jitterEnabled = true;
+    public static boolean legacyMode = true;
 
     private World lastWorld;
     private boolean physicalWasDown;
@@ -157,14 +158,22 @@ public final class AutoLeftClient implements ClientModInitializer {
                     enabled, activeGameplay, physicalDown, entityTargeted)) {
                 int pulses = clickLimiter.acquire(nowNanos, cps, true);
                 for (int i = 0; i < pulses; i++) {
-                    ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+                    if (legacyMode) {
+                        LegacyAttack.perform(client);
+                    } else {
+                        ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+                    }
                     leftCpsTracker.recordClick();
                 }
             }
         } else {
             if (combatPolicy.shouldEmitFollowUp(nowNanos, cps,
                     enabled, activeGameplay, physicalDown, entityTargeted)) {
-                ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+                if (legacyMode) {
+                    LegacyAttack.perform(client);
+                } else {
+                    ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+                }
                 leftCpsTracker.recordClick();
             }
         }
@@ -240,6 +249,7 @@ public final class AutoLeftClient implements ClientModInitializer {
         public int toggleKeyCode = -1;
         public int cps = RecommendedSettings.AUTO_LEFT_CPS;
         public boolean jitterEnabled = true;
+        public boolean legacyMode = true;
 
         // Read-only migration fields for v7 and older files; normalized back to null.
         public Integer minCps;
@@ -252,6 +262,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             cfg.toggleKeyCode = -1;
             cfg.cps = RecommendedSettings.AUTO_LEFT_CPS;
             cfg.jitterEnabled = true;
+            cfg.legacyMode = true;
             cfg.minCps = null;
             cfg.maxCps = null;
             cfg.normalize();
@@ -265,6 +276,7 @@ public final class AutoLeftClient implements ClientModInitializer {
             result.toggleKeyCode = toggleKeyCode;
             result.cps = cps;
             result.jitterEnabled = jitterEnabled;
+            result.legacyMode = legacyMode;
             result.minCps = minCps;
             result.maxCps = maxCps;
             result.normalize();
@@ -326,6 +338,7 @@ public final class AutoLeftClient implements ClientModInitializer {
         toggleKeyCode = cfg.toggleKeyCode;
         cps = cfg.cps;
         jitterEnabled = cfg.jitterEnabled;
+        legacyMode = cfg.legacyMode;
     }
 
     private static int normalizeToggleKeyCode(int key) {

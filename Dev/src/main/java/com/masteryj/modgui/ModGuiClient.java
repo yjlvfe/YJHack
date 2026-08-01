@@ -514,16 +514,20 @@ public final class ModGuiClient implements ClientModInitializer {
                 cfg.jitterEnabled = value;
                 saveNow();
             }));
-            addDrawableChild(new HudPositionEditor(x, y + 126, w, 76,
+            addDrawableChild(new ToggleSwitch(x, y + 126, w, 22, "Legacy Mode (1.8)", cfg.legacyMode, value -> {
+                cfg.legacyMode = value;
+                saveNow();
+            }));
+            addDrawableChild(new HudPositionEditor(x, y + 156, w, 76,
                     () -> AutoLeftClient.cpsHudX, () -> AutoLeftClient.cpsHudY,
                     (newX, newY) -> {
                         AutoLeftClient.cpsHudX = newX;
                         AutoLeftClient.cpsHudY = newY;
                         markEdited();
                     }));
-            addSlider(x, y + 210, w, "HUD X", 4, 1000, AutoLeftClient.cpsHudX, true,
+            addSlider(x, y + 240, w, "HUD X", 4, 1000, AutoLeftClient.cpsHudX, true,
                     value -> AutoLeftClient.cpsHudX = (int) Math.round(value));
-            addSlider(x, y + 240, w, "HUD Y", 4, 1000, AutoLeftClient.cpsHudY, true,
+            addSlider(x, y + 270, w, "HUD Y", 4, 1000, AutoLeftClient.cpsHudY, true,
                     value -> AutoLeftClient.cpsHudY = (int) Math.round(value));
             addActionBar(() -> restoreRecommended(() -> cfg = RecommendedProfiles.autoLeft()));
         }
