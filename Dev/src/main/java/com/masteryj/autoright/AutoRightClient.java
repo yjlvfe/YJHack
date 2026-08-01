@@ -209,9 +209,11 @@ public final class AutoRightClient implements ClientModInitializer {
         // Compute pulses first
         int pulses;
         if (jitterEnabled) {
-            pulses = placementPolicy.pulsesThisTick(
-                    enabled, activeGameplay, physicalDown, validCandidate);
-            if (pulses > 0) {
+            // Jittered timing via HumanizedCpsLimiter — policy check only
+            if (placementPolicy.pulsesThisTick(
+                    enabled, activeGameplay, physicalDown, validCandidate) == 0) {
+                pulses = 0;
+            } else {
                 pulses = clickLimiter.acquire(nowNanos, cps, true);
             }
         } else {
