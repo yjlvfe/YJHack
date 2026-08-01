@@ -508,7 +508,7 @@ public final class ModGuiClient implements ClientModInitializer {
                 cfg.toggleKeyCode = code;
                 saveNow();
             }));
-            addSlider(x, y + 66, w, "CPS", 1, 20, cfg.cps, true,
+            addSlider(x, y + 66, w, "CPS", 1, 40, cfg.cps, true,
                     value -> cfg.cps = (int) Math.round(value));
             addDrawableChild(new ToggleSwitch(x, y + 96, w, 22, "Jitter (Anti-Cheat)", cfg.jitterEnabled, value -> {
                 cfg.jitterEnabled = value;
@@ -576,7 +576,7 @@ public final class ModGuiClient implements ClientModInitializer {
                 cfg.toggleKeyCode = code;
                 saveNow();
             }));
-            addSlider(x, y + 66, w, "CPS", 1, 20, cfg.cps, true,
+            addSlider(x, y + 66, w, "CPS", 1, 40, cfg.cps, true,
                     value -> cfg.cps = (int) Math.round(value));
             addDrawableChild(new ToggleSwitch(x, y + 96, w, 22, "Jitter (Anti-Cheat)", cfg.jitterEnabled, value -> {
                 cfg.jitterEnabled = value;

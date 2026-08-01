@@ -10,7 +10,7 @@ class FixedCpsLimiterTest {
 
     @Test
     void everySupportedCpsUsesItsFixedInterval() {
-        for (int cps = 1; cps <= 20; cps++) {
+        for (int cps = 1; cps <= 40; cps++) {
             FixedCpsLimiter limiter = new FixedCpsLimiter();
             long interval = 1_000_000_000L / cps;
             assertFalse(limiter.acquire(0L, cps));
@@ -58,11 +58,11 @@ class FixedCpsLimiterTest {
     }
 
     @Test
-    void cpsIsClampedToOneThroughTwenty() {
+    void cpsIsClampedToOneThroughForty() {
         assertEquals(1, FixedCpsLimiter.clampCps(-100));
         assertEquals(1, FixedCpsLimiter.clampCps(1));
-        assertEquals(20, FixedCpsLimiter.clampCps(20));
-        assertEquals(20, FixedCpsLimiter.clampCps(20));
-        assertEquals(20, FixedCpsLimiter.clampCps(1000));
+        assertEquals(40, FixedCpsLimiter.clampCps(40));
+        assertEquals(40, FixedCpsLimiter.clampCps(40));
+        assertEquals(40, FixedCpsLimiter.clampCps(1000));
     }
 }
