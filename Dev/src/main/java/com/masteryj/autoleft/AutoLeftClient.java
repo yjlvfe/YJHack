@@ -175,27 +175,21 @@ public final class AutoLeftClient implements ClientModInitializer {
         }
 
         restoreVanillaAttack(client, false);
-
-        // Compute pulses first, then ask budget per pulse
-        int pulses = 0;
-        boolean shouldFire;
         if (jitterEnabled) {
-            shouldFire = combatPolicy.shouldEmitFollowUp(
-                    enabled, activeGameplay, physicalDown, entityTargeted);
-            if (shouldFire) {
-                pulses = clickLimiter.acquire(nowNanos, cps, true);
+            if (combatPolicy.shouldEmitFollowUp(
+                    enabled, activeGameplay, physicalDown, entityTargeted)) {
+                int pulses = clickLimiter.acquire(nowNanos, cps, true);
+                for (int i = 0; i < pulses; i++) {
+                    ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+                    leftCpsTracker.recordClick();
+                }
             }
         } else {
-            shouldFire = combatPolicy.shouldEmitFollowUp(nowNanos, cps,
-                    enabled, activeGameplay, physicalDown, entityTargeted);
-            if (shouldFire) pulses = 1;
-        }
-
-        // Execute only what budget allows
-        while (pulses > 0 && ActionBudget.INSTANCE.requestLeft()) {
-            PhysicalKeyBinding.queuePress(client, client.options.attackKey);
-            leftCpsTracker.recordClick();
-            pulses--;
+            if (combatPolicy.shouldEmitFollowUp(nowNanos, cps,
+                    enabled, activeGameplay, physicalDown, entityTargeted)) {
+                ((MinecraftClientInvoker) client).yjhack$invokeDoAttack();
+                leftCpsTracker.recordClick();
+            }
         }
     }
 

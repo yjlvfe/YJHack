@@ -203,12 +203,11 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        // For blocks: let vanilla handle placement. CPS limiter gates how often
-        // we allow vanilla to see the pressed state (the rest of the time, we release it).
+        restoreVanillaUse(client, false);
         boolean validCandidate = client.crosshairTarget instanceof BlockHitResult;
         int pulses;
         if (jitterEnabled) {
-            pulses = placementPolicy.pulsesThisTick(
+            pulses = placementPolicy.pulsesThisTick(cps,
                     enabled, activeGameplay, physicalDown, validCandidate);
             if (pulses > 0) {
                 pulses = clickLimiter.acquire(nowNanos, cps, true);
@@ -217,15 +216,8 @@ public final class AutoRightClient implements ClientModInitializer {
             pulses = placementPolicy.pulsesThisTick(cps,
                     enabled, activeGameplay, physicalDown, validCandidate);
         }
-
-        // Vanilla handles the actual placement. We just gate whether it sees the key as pressed.
-        if (pulses > 0 && ActionBudget.INSTANCE.requestRight()) {
-            restoreVanillaUse(client, true);
-        } else {
-            restoreVanillaUse(client, false);
-        }
-        // Record one click for the HUD if any pulse fired
-        if (pulses > 0) {
+        for (int i = 0; i < pulses; i++) {
+            if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) break;
             AutoLeftClient.rightCpsTracker.recordClick();
         }
     }
