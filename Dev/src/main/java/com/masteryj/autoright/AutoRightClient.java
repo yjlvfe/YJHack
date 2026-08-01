@@ -9,7 +9,6 @@ import com.masteryj.core.HumanizedCpsLimiter;
 import com.masteryj.core.PhysicalKeyBinding;
 import com.masteryj.core.ActionBudget;
 import com.masteryj.autoleft.AutoLeftClient;
-import com.masteryj.mixin.MinecraftClientInvoker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -204,17 +203,14 @@ public final class AutoRightClient implements ClientModInitializer {
             return;
         }
 
-        restoreVanillaUse(client, false);
+        // For blocks: let vanilla handle placement. CPS limiter gates how often
+        // we allow vanilla to see the pressed state (the rest of the time, we release it).
         boolean validCandidate = client.crosshairTarget instanceof BlockHitResult;
-
-        // Compute pulses first
         int pulses;
         if (jitterEnabled) {
-            // Jittered timing via HumanizedCpsLimiter — policy check only
-            if (placementPolicy.pulsesThisTick(
-                    enabled, activeGameplay, physicalDown, validCandidate) == 0) {
-                pulses = 0;
-            } else {
+            pulses = placementPolicy.pulsesThisTick(
+                    enabled, activeGameplay, physicalDown, validCandidate);
+            if (pulses > 0) {
                 pulses = clickLimiter.acquire(nowNanos, cps, true);
             }
         } else {
@@ -222,14 +218,15 @@ public final class AutoRightClient implements ClientModInitializer {
                     enabled, activeGameplay, physicalDown, validCandidate);
         }
 
-        // Execute only what budget allows
-        while (pulses > 0 && ActionBudget.INSTANCE.requestRight()) {
-            // Try vanilla queue first (works on most servers), fallback to doItemUse
-            if (!PhysicalKeyBinding.queuePress(client, client.options.useKey)) {
-                ((MinecraftClientInvoker) client).yjhack$invokeDoItemUse();
-            }
+        // Vanilla handles the actual placement. We just gate whether it sees the key as pressed.
+        if (pulses > 0 && ActionBudget.INSTANCE.requestRight()) {
+            restoreVanillaUse(client, true);
+        } else {
+            restoreVanillaUse(client, false);
+        }
+        // Record one click for the HUD if any pulse fired
+        if (pulses > 0) {
             AutoLeftClient.rightCpsTracker.recordClick();
-            pulses--;
         }
     }
 
