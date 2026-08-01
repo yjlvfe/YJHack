@@ -46,14 +46,6 @@ public final class AutoLeftClient implements ClientModInitializer {
     private final LegacyMultiVersionCombatPolicy combatPolicy = new LegacyMultiVersionCombatPolicy();
     private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
 
-    // Release-click gap: skip first tick after re-press
-    private long lastReleaseNanos;
-    private static final long RELEASE_GAP_NANOS = 50_000_000L; // 1 tick
-
-    // TPS-drop detection
-    private long lastFrameNanos;
-    private boolean tpsDropSilence;
-
     // CPS tracking for HUD display
     private static final CpsTracker leftCpsTracker = new CpsTracker();
     public static final CpsTracker rightCpsTracker = new CpsTracker();
@@ -126,7 +118,6 @@ public final class AutoLeftClient implements ClientModInitializer {
         }
 
         if (!physicalDown) {
-            lastReleaseNanos = System.nanoTime();
             physicalWasDown = false;
             restoreVanillaAttack(client, false);
             clearRuntimeState();
@@ -146,34 +137,13 @@ public final class AutoLeftClient implements ClientModInitializer {
             return;
         }
 
-        // Release-click gap: skip first tick after re-press
-        if (System.nanoTime() - lastReleaseNanos < RELEASE_GAP_NANOS) {
-            restoreVanillaAttack(client, true);
-            return;
-        }
-
-        // TPS-drop silence: skip actions when frame gap > 100ms
-        long nowNanos = System.nanoTime();
-        if (lastFrameNanos != 0) {
-            long gap = nowNanos - lastFrameNanos;
-            if (gap > 100_000_000L) {
-                tpsDropSilence = true;
-            }
-        }
-        lastFrameNanos = nowNanos;
-        if (tpsDropSilence) {
-            tpsDropSilence = false;
-            restoreVanillaAttack(client, true);
-            clearRuntimeState();
-            return;
-        }
-
         if (!shouldRunDirectAttack(enabled, activeGameplay, physicalDown, entityTargeted)) {
             restoreVanillaAttack(client, true);
             clearRuntimeState();
             return;
         }
 
+        long nowNanos = System.nanoTime();
         restoreVanillaAttack(client, false);
         if (jitterEnabled) {
             if (combatPolicy.shouldEmitFollowUp(

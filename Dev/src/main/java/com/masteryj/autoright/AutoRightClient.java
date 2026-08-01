@@ -48,14 +48,6 @@ public final class AutoRightClient implements ClientModInitializer {
             new LegacyMultiVersionPlacementPolicy();
     private final HumanizedCpsLimiter clickLimiter = new HumanizedCpsLimiter();
 
-    // Release-click gap
-    private long lastReleaseNanos;
-    private static final long RELEASE_GAP_NANOS = 50_000_000L;
-
-    // TPS-drop
-    private long lastTickNanos;
-    private boolean tpsDropSilence;
-
     public static Config config;
     public static boolean enabled;
     public static int toggleKeyCode = -1;
@@ -117,29 +109,9 @@ public final class AutoRightClient implements ClientModInitializer {
         }
 
         if (!physicalDown) {
-            lastReleaseNanos = System.nanoTime();
             physicalWasDown = false;
             restoreVanillaUse(client, false);
             clearPressState();
-            return;
-        }
-
-        // Release-click gap: skip automation, let vanilla hold pass through.
-        // But still process the rising edge so pressedKind gets set correctly.
-        boolean inReleaseGap = System.nanoTime() - lastReleaseNanos < RELEASE_GAP_NANOS;
-
-        // TPS-drop silence
-        long nowNanos = System.nanoTime();
-        if (lastTickNanos != 0) {
-            long gap = nowNanos - lastTickNanos;
-            if (gap > 100_000_000L) tpsDropSilence = true;
-        }
-        lastTickNanos = nowNanos;
-        if (tpsDropSilence) {
-            tpsDropSilence = false;
-            physicalWasDown = true;
-            restoreVanillaUse(client, physicalDown);
-            clearRuntimeState();
             return;
         }
 
@@ -197,14 +169,10 @@ public final class AutoRightClient implements ClientModInitializer {
         }
 
         // Budget gate
-        if (inReleaseGap) {
-            restoreVanillaUse(client, true);
-            placementPolicy.clearRuntimeState();
-            return;
-        }
 
         restoreVanillaUse(client, false);
         boolean validCandidate = client.crosshairTarget instanceof BlockHitResult;
+        long nowNanos = System.nanoTime();
         int pulses;
         if (jitterEnabled) {
             pulses = placementPolicy.pulsesThisTick(cps,
