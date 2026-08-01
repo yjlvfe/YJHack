@@ -9,8 +9,9 @@ import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 
 /**
- * Legacy-style (pre-1.9) attack packet, bypassing modern attack cooldown.
- * Automatically applies critical hits when the player is falling.
+ * Legacy-style (pre-1.9) attack, bypassing modern attack cooldown.
+ * Critical hits: send the critical packet BEFORE the attack packet
+ * when the player is falling (not on ground, not in liquid, not climbing).
  */
 public final class LegacyAttack {
 
@@ -26,26 +27,25 @@ public final class LegacyAttack {
         Entity target = entityHit.getEntity();
         if (!(target instanceof PlayerEntity) && !target.isLiving()) return false;
 
-        // Reset cooldown so modern client doesn't block
-        client.player.resetLastAttackedTicks();
-
-        // Check for critical hit conditions
         ClientPlayerEntity p = client.player;
+
+        // Reset cooldown so modern client doesn't block
+        p.resetLastAttackedTicks();
+
+        // Critical hit: must send critical packet BEFORE attack packet (1.8 protocol)
         boolean critical = p.fallDistance > 0.0F && !p.isOnGround()
                 && !p.isTouchingWater() && !p.isInLava()
                 && !p.isClimbing() && !p.hasVehicle();
 
-        // Send attack packet (with critical flag)
-        client.getNetworkHandler().sendPacket(
-                PlayerInteractEntityC2SPacket.attack(target, p.isSneaking()));
-
-        // If critical, send the critical packet separately
         if (critical) {
+            // Send critical hit packet first
             client.getNetworkHandler().sendPacket(
                     PlayerInteractEntityC2SPacket.attack(target, p.isSneaking()));
-            // Swing again for crit visual
-            p.swingHand(p.getActiveHand());
         }
+
+        // Send normal attack packet
+        client.getNetworkHandler().sendPacket(
+                PlayerInteractEntityC2SPacket.attack(target, p.isSneaking()));
 
         // Swing hand
         p.swingHand(p.getActiveHand());
