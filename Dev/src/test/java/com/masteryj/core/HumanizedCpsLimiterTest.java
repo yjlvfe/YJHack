@@ -9,9 +9,7 @@ class HumanizedCpsLimiterTest {
     void jitterRatioIncreasesWithCps() {
         double r10 = HumanizedCpsLimiter.jitterRatio(10);
         double r20 = HumanizedCpsLimiter.jitterRatio(20);
-
         assertTrue(r20 > r10);
-
         assertEquals(0.10, r10, 0.02);
         assertEquals(0.15, r20, 0.02);
     }
@@ -28,27 +26,27 @@ class HumanizedCpsLimiterTest {
     }
 
     @Test
-    void jitter10NearTarget() {
+    void jitter10HitsTarget() {
         HumanizedCpsLimiter limiter = new HumanizedCpsLimiter();
         int emitted = 0;
         for (long t = 0; t < 5_000_000_000L; t += 50_000_000L) {
             emitted += limiter.acquire(t, 10, true);
         }
         double avg = emitted / 5.0;
-        assertTrue(avg >= 7 && avg <= 15,
-                "10 CPS jittered avg ~10, got " + avg);
+        assertTrue(avg >= 8 && avg <= 12,
+                "10 CPS avg " + avg);
     }
 
     @Test
-    void jitter20NearTarget() {
+    void jitter20HitsTarget() {
         HumanizedCpsLimiter limiter = new HumanizedCpsLimiter();
         int emitted = 0;
         for (long t = 0; t < 5_000_000_000L; t += 50_000_000L) {
             emitted += limiter.acquire(t, 20, true);
         }
         double avg = emitted / 5.0;
-        assertTrue(avg >= 10 && avg <= 20,
-                "20 CPS jittered avg ~20, got " + avg);
+        assertTrue(avg >= 17 && avg <= 23,
+                "20 CPS avg " + avg);
     }
 
     @Test

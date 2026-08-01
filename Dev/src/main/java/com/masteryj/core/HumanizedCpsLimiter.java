@@ -4,13 +4,10 @@ import java.util.random.RandomGenerator;
 import java.util.random.RandomGeneratorFactory;
 
 /**
- * Humanized CPS limiter — variable inter-click timing.
+ * Humanized CPS limiter — catches up missed clicks accumulated between calls.
  *
- * <p>The jitter range scales with CPS: 10cps→±10%, 20cps→±15%.
- * Higher CPS = wider timing variation.
- *
- * <p>Strictly at most 1 click per call. Missed time is discarded —
- * no catch-up, no burst, no replay.
+ * <p>Returns 0 to N clicks — however many are due since the last call.
+ * Missed time is never discarded; the limiter advances through all due clicks.
  */
 public final class HumanizedCpsLimiter {
 
@@ -44,20 +41,22 @@ public final class HumanizedCpsLimiter {
             return 1;
         }
 
-        if (nowNanos < nextClickAt) return 0;
-
-        // Exactly 1 click. No catch-up, no burst.
-        scheduleNext(nowNanos, cps);
-        return 1;
+        // Count all clicks that are due
+        int count = 0;
+        while (nowNanos >= nextClickAt) {
+            count++;
+            scheduleNext(nextClickAt, cps);
+        }
+        return count;
     }
 
-    private void scheduleNext(long now, int cps) {
+    private void scheduleNext(long base, int cps) {
         double baseNs = 1_000_000_000.0 / cps;
         double ratio = jitterRatio(cps);
         double minMultiplier = 1.0 - ratio;
         double maxMultiplier = 1.0 + ratio;
         double jittered = baseNs * (minMultiplier + RNG.nextDouble() * (maxMultiplier - minMultiplier));
-        nextClickAt = now + (long) jittered;
+        nextClickAt = base + (long) jittered;
     }
 
     public void clearTimingState() {
